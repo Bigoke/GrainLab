@@ -64,6 +64,30 @@ object Settings {
     var storeSafeNames: Boolean
         get() = b("storeSafeNames", false)
         set(v) = put { putBoolean("storeSafeNames", v) }
+    var shutterSound: Boolean
+        get() = b("shutterSound", true)
+        set(v) = put { putBoolean("shutterSound", v) }
+    var histogram: Boolean
+        get() = b("histogram", false)
+        set(v) = put { putBoolean("histogram", v) }
+    var peaking: Boolean
+        get() = b("peaking", false)
+        set(v) = put { putBoolean("peaking", v) }
+    var zebra: Boolean
+        get() = b("zebra", false)
+        set(v) = put { putBoolean("zebra", v) }
+    var cine24: Boolean
+        get() = b("cine24", false)
+        set(v) = put { putBoolean("cine24", v) }
+    var stabilise: Boolean
+        get() = b("stabilise", true)
+        set(v) = put { putBoolean("stabilise", v) }
+    var night: Boolean
+        get() = b("night", false)
+        set(v) = put { putBoolean("night", v) }
+    var proMode: Boolean
+        get() = b("proMode", false)
+        set(v) = put { putBoolean("proMode", v) }
     var onboarded: Boolean
         get() = b("onboarded", false)
         set(v) = put { putBoolean("onboarded", v) }

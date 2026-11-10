@@ -54,9 +54,18 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     @Volatile var rotationDegrees = 90
     @Volatile var mirror = false
 
+    @Volatile var peaking = false
+        set(v) { field = v; effects = effects.copy(peaking = if (v) 1f else 0f); view.requestRender() }
+    @Volatile var zebra = false
+        set(v) { field = v; effects = effects.copy(zebra = if (v) 1f else 0f); view.requestRender() }
+
     fun setLook(params: EditParams, lut: FloatArray) {
         // Heavy per-pixel filters are applied after capture, not live, to keep the viewfinder smooth.
-        effects = Effects.from(params).copy(noiseReduction = 0f)
+        effects = Effects.from(params).copy(
+            noiseReduction = 0f,
+            peaking = if (peaking) 1f else 0f,
+            zebra = if (zebra) 1f else 0f,
+        )
         pendingLut = lut
         view.requestRender()
     }

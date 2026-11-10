@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import com.bigoke.grainlab.camera.CameraKeys
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -53,6 +55,20 @@ class MainActivity : ComponentActivity() {
                 App(shared)
             }
         }
+    }
+
+    // Volume buttons work as a shutter while the camera is on screen.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (CameraKeys.active && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            if (event?.repeatCount == 0) CameraKeys.presses.tryEmit(Unit)
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (CameraKeys.active && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) return true
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun sharedImage(intent: Intent?): Uri? {

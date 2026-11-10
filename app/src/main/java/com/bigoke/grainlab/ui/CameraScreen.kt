@@ -23,6 +23,7 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.MirrorMode
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
@@ -42,6 +43,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import kotlinx.coroutines.coroutineScope
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
@@ -126,6 +131,23 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.media.MediaActionSound
+import android.util.Range
+import android.view.HapticFeedbackConstants
+import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalView
+import com.bigoke.grainlab.camera.CameraKeys
+import com.bigoke.grainlab.camera.HistogramAnalyzer
+import com.bigoke.grainlab.camera.Manual
+import com.bigoke.grainlab.camera.ManualRanges
+import com.bigoke.grainlab.camera.ProCamera
+import com.bigoke.grainlab.camera.rememberRoll
+import java.util.concurrent.Executors
 import com.bigoke.grainlab.data.Lens
 import com.bigoke.grainlab.data.LensCatalog
 import com.bigoke.grainlab.data.Settings
@@ -318,6 +340,84 @@ private fun CameraView(
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var flashOverlay by remember { mutableStateOf(false) }
 
+    // ---- Pro and feedback settings (remembered) ----
+    var shutterSound by remember { mutableStateOf(Settings.shutterSound) }
+    var showHistogram by remember { mutableStateOf(Settings.histogram) }
+    var peaking by remember { mutableStateOf(Settings.peaking) }
+    var zebra by remember { mutableStateOf(Settings.zebra) }
+    var cine24 by remember { mutableStateOf(Settings.cine24) }
+    var stabilise by remember { mutableStateOf(Settings.stabilise) }
+    var night by remember { mutableStateOf(Settings.night) }
+    var proMode by remember { mutableStateOf(Settings.proMode) }
+    var level by remember { mutableStateOf(Settings.level) }
+    var keepLocation by remember { mutableStateOf(Settings.keepLocation) }
+    var safeNames by remember { mutableStateOf(Settings.storeSafeNames) }
+    LaunchedEffect(shutterSound, showHistogram, peaking, zebra, cine24, stabilise, night, proMode, level, keepLocation, safeNames) {
+        Settings.shutterSound = shutterSound
+        Settings.histogram = showHistogram
+        Settings.peaking = peaking
+        Settings.zebra = zebra
+        Settings.cine24 = cine24
+        Settings.stabilise = stabilise
+        Settings.night = night
+        Settings.proMode = proMode
+        Settings.level = level
+        Settings.keepLocation = keepLocation
+        Settings.storeSafeNames = safeNames
+        FilmLooks.safeNames = safeNames
+    }
+    SideEffect {
+        renderer.peaking = peaking
+        renderer.zebra = zebra
+    }
+
+    var manual by remember { mutableStateOf(Manual()) }
+    var ranges by remember { mutableStateOf<ManualRanges?>(null) }
+    var proTab by remember { mutableStateOf("iso") }
+    var bursting by remember { mutableStateOf(false) }
+    var burstCount by remember { mutableIntStateOf(0) }
+    var nightProgress by remember { mutableStateOf<Int?>(null) }
+    val analyzer = remember { HistogramAnalyzer() }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val histBins by analyzer.bins.collectAsState()
+    val roll by rememberRoll(level)
+    val sound = remember { MediaActionSound().also { it.load(MediaActionSound.SHUTTER_CLICK) } }
+    val view = LocalView.current
+    var lastLocation by remember { mutableStateOf<Location?>(null) }
+    var locGranted by remember { mutableStateOf(context.granted(Manifest.permission.ACCESS_FINE_LOCATION) || context.granted(Manifest.permission.ACCESS_COARSE_LOCATION)) }
+    val locLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        locGranted = context.granted(Manifest.permission.ACCESS_FINE_LOCATION) || context.granted(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (!locGranted) keepLocation = false
+    }
+
+    // Keep a recent location only while "save location" is on.
+    DisposableEffect(keepLocation, locGranted) {
+        if (!keepLocation || !locGranted) return@DisposableEffect onDispose { }
+        val lm = context.getSystemService(LocationManager::class.java) ?: return@DisposableEffect onDispose { }
+        val listener = LocationListener { lastLocation = it }
+        runCatching {
+            for (prov in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
+                val l = lm.getLastKnownLocation(prov)
+                if (l != null && (lastLocation == null || l.time > (lastLocation?.time ?: 0L))) lastLocation = l
+            }
+            val prov = if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER
+            lm.requestLocationUpdates(prov, 30_000L, 25f, listener, android.os.Looper.getMainLooper())
+        }
+        onDispose { runCatching { lm.removeUpdates(listener) } }
+    }
+
+    DisposableEffect(Unit) {
+        CameraKeys.active = true
+        onDispose {
+            CameraKeys.active = false
+            analysisExecutor.shutdown()
+            sound.release()
+        }
+    }
+
+    // Manual controls go back to automatic when pro mode is turned off.
+    LaunchedEffect(proMode) { if (!proMode) manual = Manual() }
+
     val pendingShots by PhotoDeveloper.pending.collectAsState()
     val lastShot by PhotoDeveloper.last.collectAsState()
     LaunchedEffect(lastShot) { lastShot?.let { lastUri = it.first; lastThumb = it.second } }
@@ -406,7 +506,7 @@ private fun CameraView(
     }
 
     // ---- Bind the camera ----
-    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId) {
+    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night) {
         if (surfaceGen == 0) return@LaunchedEffect
         val provider = awaitProvider(context)
         cam.provider = provider
@@ -423,30 +523,54 @@ private fun CameraView(
             else -> CameraSelector.DEFAULT_BACK_CAMERA
         }
         renderer.mirror = !lensBack
+        // Zero-shutter-lag keeps a short buffer of frames so the photo is taken the instant you tap.
+        val zsl = runCatching { provider.getCameraInfo(cameraSelector).isZslSupported }.getOrDefault(false)
+        val analysis = if (showHistogram) ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also { it.setAnalyzer(analysisExecutor, analyzer) } else null
         try {
             provider.unbindAll()
-            if (mode == Mode.PHOTO) {
+            val main = if (mode == Mode.PHOTO) {
                 val ic = ImageCapture.Builder()
                     .setResolutionSelector(selector)
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setCaptureMode(
+                        if (zsl && !night) ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
+                        else ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY,
+                    )
                     .setFlashMode(flash)
                     .build()
                 cam.imageCapture = ic
                 cam.videoCapture = null
-                cam.camera = provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, ic)
+                ic
             } else {
                 val q = listOf(Quality.HD, Quality.FHD, Quality.UHD)[quality.coerceIn(0, 2)]
                 val recorder = Recorder.Builder()
                     .setQualitySelector(QualitySelector.from(q, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
                     .build()
-                val vc = VideoCapture.Builder(recorder)
+                val vb = VideoCapture.Builder(recorder)
                     .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
-                    .build()
+                    .setVideoStabilizationEnabled(stabilise)
+                if (cine24) vb.setTargetFrameRate(Range(24, 24))
+                val vc = vb.build()
                 cam.videoCapture = vc
                 cam.imageCapture = null
-                cam.camera = provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, vc)
+                vc
+            }
+            cam.camera = try {
+                if (analysis != null) provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, main, analysis)
+                else provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, main)
+            } catch (e: Exception) {
+                // Some phones cannot run the histogram alongside capture; drop it rather than fail.
+                provider.unbindAll()
+                provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, main)
             }
             exposureIndex = 0
+            cam.camera?.let { c ->
+                val r = ManualRanges.read(c)
+                ranges = r
+                if (!manual.isAuto) ProCamera.apply(c, manual, r)
+            }
         } catch (e: Exception) {
             // A separate lens that cannot be opened falls back to the main camera.
             if (bindCameraId != null) {
@@ -488,48 +612,94 @@ private fun CameraView(
         lookToast = next.title
     }
 
+    fun feedback() {
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (shutterSound) runCatching { sound.play(MediaActionSound.SHUTTER_CLICK) }
+    }
+
+    suspend fun captureOne(ic: ImageCapture): Pair<ByteArray, Int>? =
+        suspendCancellableCoroutine { cont ->
+            ic.takePicture(
+                mainExecutor,
+                object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(image: ImageProxy) {
+                        val result = runCatching {
+                            val buf = image.planes[0].buffer
+                            buf.rewind()
+                            val bytes = ByteArray(buf.remaining())
+                            buf.get(bytes)
+                            bytes to image.imageInfo.rotationDegrees
+                        }.getOrNull()
+                        image.close()
+                        if (cont.isActive) cont.resume(result)
+                    }
+
+                    override fun onError(exception: ImageCaptureException) {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                },
+            )
+        }
+
     fun takePhoto() {
-        if (countdown > 0) return
+        if (countdown > 0 || nightProgress != null) return
         scope.launch {
             if (timer > 0) {
                 for (i in timer downTo 1) { countdown = i; delay(1000) }
                 countdown = 0
             }
             val ic = cam.imageCapture ?: return@launch
-            flashOverlay = true
-            val shot = suspendCancellableCoroutine<Pair<ByteArray, Int>?> { cont ->
-                ic.takePicture(
-                    mainExecutor,
-                    object : ImageCapture.OnImageCapturedCallback() {
-                        override fun onCaptureSuccess(image: ImageProxy) {
-                            val result = runCatching {
-                                val buf = image.planes[0].buffer
-                                buf.rewind()
-                                val bytes = ByteArray(buf.remaining())
-                                buf.get(bytes)
-                                bytes to image.imageInfo.rotationDegrees
-                            }.getOrNull()
-                            image.close()
-                            if (cont.isActive) cont.resume(result)
-                        }
-
-                        override fun onError(exception: ImageCaptureException) {
-                            if (cont.isActive) cont.resume(null)
-                        }
-                    },
-                )
+            val loc = if (keepLocation) lastLocation else null
+            if (night) {
+                // Night mode: several frames, then align and average them.
+                feedback()
+                val frames = ArrayList<Pair<ByteArray, Int>>()
+                for (i in 1..6) {
+                    nightProgress = i
+                    captureOne(ic)?.let { frames.add(it) }
+                }
+                nightProgress = null
+                if (frames.isEmpty()) { context.toast("Capture failed"); return@launch }
+                PhotoDeveloper.submitNight(context, frames, effective, mirror = !lensBack, keepOriginal = saveOriginal, location = loc)
+                return@launch
             }
+            flashOverlay = true
+            feedback()
+            val shot = captureOne(ic)
             flashOverlay = false
             if (shot == null) {
                 context.toast("Capture failed")
                 return@launch
             }
-            PhotoDeveloper.submit(context, shot.first, shot.second, effective, mirror = !lensBack, keepOriginal = saveOriginal)
+            PhotoDeveloper.submit(context, shot.first, shot.second, effective, mirror = !lensBack, keepOriginal = saveOriginal, location = loc)
+        }
+    }
+
+    /** Burst: keeps shooting while the shutter is held (up to 30 frames). */
+    fun startBurst() {
+        if (bursting || night) return
+        val ic = cam.imageCapture ?: return
+        bursting = true
+        burstCount = 0
+        scope.launch {
+            val p = effective
+            val loc = if (keepLocation) lastLocation else null
+            while (bursting && burstCount < 30) {
+                val shot = captureOne(ic) ?: break
+                feedback()
+                burstCount++
+                PhotoDeveloper.submit(context, shot.first, shot.second, p, mirror = !lensBack, keepOriginal = false, location = loc)
+            }
+            bursting = false
         }
     }
 
     fun toggleRecording() {
         val rec = recording
+        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (shutterSound) runCatching {
+            sound.play(if (rec != null) MediaActionSound.STOP_VIDEO_RECORDING else MediaActionSound.START_VIDEO_RECORDING)
+        }
         if (rec != null) {
             rec.stop()
             return
@@ -566,6 +736,14 @@ private fun CameraView(
                 else -> Unit
             }
         }
+    }
+
+    val shutterAction by rememberUpdatedState({ if (mode == Mode.PHOTO) takePhoto() else toggleRecording() })
+    LaunchedEffect(Unit) { CameraKeys.presses.collect { shutterAction() } }
+    LaunchedEffect(manual, ranges) {
+        val c = cam.camera ?: return@LaunchedEffect
+        val r = ranges ?: return@LaunchedEffect
+        ProCamera.apply(c, manual, r)
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -651,6 +829,44 @@ private fun CameraView(
             lookToast?.let {
                 Pill(it, Modifier.align(Alignment.TopCenter).offset(y = centreY - 16.dp))
             }
+            // Horizon level: a line that turns green when the phone is straight.
+            if (level) {
+                val straight = abs(roll) < 1f
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = centreY)
+                        .rotate(-roll)
+                        .width(140.dp)
+                        .height(2.dp)
+                        .background(if (straight) Color(0xFF4CAF50) else Color(0xCCFFFFFF)),
+                )
+            }
+            // Live histogram in the picture's top-left corner.
+            if (showHistogram) {
+                val topDp = with(density) { top.toDp() }
+                val leftDp = with(density) { left.toDp() }
+                Canvas(
+                    Modifier
+                        .offset(x = leftDp + 8.dp, y = topDp + 8.dp)
+                        .size(width = 112.dp, height = 48.dp)
+                        .background(Color(0x88000000), RoundedCornerShape(6.dp)),
+                ) {
+                    val bins = histBins
+                    val mx = (bins.maxOrNull() ?: 1).coerceAtLeast(1).toFloat()
+                    val bw = size.width / bins.size
+                    bins.forEachIndexed { i, v ->
+                        val h = size.height * (v / mx)
+                        drawRect(
+                            if (i >= 61) Color(0xFFFF7043) else Color(0xDDFFFFFF),
+                            topLeft = Offset(i * bw, size.height - h),
+                            size = androidx.compose.ui.geometry.Size(bw, h),
+                        )
+                    }
+                }
+            }
+            nightProgress?.let { Pill("Night mode: hold still… $it/6", Modifier.align(Alignment.TopCenter).offset(y = centreY + 30.dp)) }
+            if (bursting) Pill("Burst $burstCount", Modifier.align(Alignment.TopCenter).offset(y = centreY + 30.dp))
         }
 
         if (flashOverlay) Box(Modifier.fillMaxSize().background(Color(0x99FFFFFF)))
@@ -684,7 +900,22 @@ private fun CameraView(
                     Text(listOf("HD", "FHD", "4K")[quality.coerceIn(0, 2)], color = Color.White)
                 }
             }
-            if (timer > 0) Text("${timer}s", color = Amber, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
+            if (mode == Mode.PHOTO) {
+                IconButton(onClick = { night = !night }) {
+                    Icon(Icons.Filled.NightsStay, contentDescription = "Night mode", tint = if (night) Amber else Color.White)
+                }
+            }
+            Text(
+                "PRO",
+                color = if (proMode) Color(0xFF2B1A00) else Color.White,
+                fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (proMode) Amber else Color(0x33FFFFFF))
+                    .clickable { proMode = !proMode }
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            if (timer > 0) Text("${timer}s", color = Amber, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
             Spacer(Modifier.weight(1f))
             if (recording != null) {
                 Row(
@@ -714,14 +945,30 @@ private fun CameraView(
                     .statusBarsPadding()
                     .padding(top = 56.dp, start = 12.dp, end = 12.dp)
                     .fillMaxWidth()
+                    .heightIn(max = 520.dp)
                     .background(Color(0xEE16140F), RoundedCornerShape(16.dp))
+                    .verticalScroll(rememberScrollState())
                     .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 SettingRow("Timer") {
                     listOf(0, 3, 10).forEach { t -> Choice(if (t == 0) "Off" else "${t}s", timer == t) { timer = t } }
                 }
                 SwitchRow("Grid", grid) { grid = it }
+                SwitchRow("Level", level) { level = it }
+                SwitchRow("Live histogram", showHistogram) { showHistogram = it }
+                SwitchRow("Focus peaking", peaking) { peaking = it }
+                SwitchRow("Highlight zebras", zebra) { zebra = it }
+                SwitchRow("Shutter sound", shutterSound) { shutterSound = it }
+                SwitchRow("Save location in photos", keepLocation) { on ->
+                    keepLocation = on
+                    if (on && !locGranted) locLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                }
+                SwitchRow("Brand-free filter names", safeNames) { safeNames = it }
+                if (mode == Mode.VIDEO) {
+                    SwitchRow("Cinematic 24 fps", cine24) { cine24 = it }
+                    SwitchRow("Stabilisation", stabilise) { stabilise = it }
+                }
                 if (mode == Mode.PHOTO) SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
                 if (mode == Mode.VIDEO) SettingRow("Video") {
                     listOf("HD", "Full HD", "4K").forEachIndexed { i, q -> Choice(q, quality == i) { if (recording == null) quality = i } }
@@ -795,6 +1042,12 @@ private fun CameraView(
                         }
                     }
                 }
+            }
+
+            // Pro controls: ISO, shutter, focus, white balance
+            val r = ranges
+            if (proMode && r != null) {
+                ProPanel(manual, r, proTab, { proTab = it }) { manual = it }
             }
 
             // Lens buttons
@@ -891,8 +1144,10 @@ private fun CameraView(
                 ShutterButton(
                     video = mode == Mode.VIDEO,
                     recording = recording != null,
-                    enabled = developing == null && countdown == 0,
+                    enabled = developing == null && countdown == 0 && nightProgress == null,
                     onClick = { if (mode == Mode.PHOTO) takePhoto() else toggleRecording() },
+                    onHoldStart = { if (mode == Mode.PHOTO) startBurst() },
+                    onHoldEnd = { bursting = false },
                 )
 
                 if (recording != null) {
@@ -960,11 +1215,20 @@ private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
 }
 
 @Composable
-private fun ShutterButton(video: Boolean, recording: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun ShutterButton(
+    video: Boolean,
+    recording: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit,
+) {
+    // Tap to shoot; hold (photo mode) for burst.
+    var held by remember { mutableStateOf(false) }
     Box(
         Modifier
             .size(76.dp)
-            .border(4.dp, Color.White, CircleShape)
+            .border(4.dp, if (held) Amber else Color.White, CircleShape)
             .padding(8.dp)
             .clip(CircleShape)
             .background(
@@ -974,10 +1238,101 @@ private fun ShutterButton(video: Boolean, recording: Boolean, enabled: Boolean, 
                     else -> Color.White
                 },
             )
-            .clickable(enabled = enabled, onClick = onClick),
+            .pointerInput(enabled, video) {
+                detectTapGestures(
+                    onPress = {
+                        if (!enabled) return@detectTapGestures
+                        held = false
+                        coroutineScope {
+                            val job = launch {
+                                delay(450)
+                                if (!video) { held = true; onHoldStart() }
+                            }
+                            tryAwaitRelease()
+                            job.cancel()
+                        }
+                        if (held) onHoldEnd()
+                    },
+                    onTap = {
+                        if (enabled && !held) onClick()
+                        held = false
+                    },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
         if (recording) Box(Modifier.size(22.dp).background(Color.White, RoundedCornerShape(4.dp)))
+    }
+}
+
+@Composable
+private fun ProPanel(m: Manual, r: ManualRanges, tab: String, onTab: (String) -> Unit, onChange: (Manual) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Color(0xCC0E0D0B)).padding(vertical = 6.dp)) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (r.manualSensor) {
+                ProChip("ISO", m.iso?.toString() ?: "Auto", tab == "iso") { onTab("iso") }
+                ProChip("Shutter", m.shutterNs?.let { ProCamera.shutterLabel(it) } ?: "Auto", tab == "shutter") { onTab("shutter") }
+            }
+            if (r.minFocusDioptre > 0f) ProChip("Focus", m.focus?.let { ProCamera.focusLabel(it) } ?: "AF", tab == "focus") { onTab("focus") }
+            ProChip("WB", ProCamera.wbModes.firstOrNull { it.first == m.wb }?.second ?: "Auto", tab == "wb") { onTab("wb") }
+            if (!m.isAuto) {
+                Text(
+                    "Reset", color = Amber, fontSize = 12.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).clickable { onChange(Manual()) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                )
+            }
+        }
+        val sliderColors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            when (tab) {
+                "iso" -> if (r.manualSensor) {
+                    TextButton(onClick = { onChange(m.copy(iso = null)) }) { Text("A", color = if (m.iso == null) Amber else Color.White) }
+                    Slider(
+                        value = ProCamera.toSlider((m.iso ?: 200).toDouble(), r.isoMin.toDouble(), r.isoMax.toDouble()),
+                        onValueChange = { onChange(m.copy(iso = ProCamera.isoFromSlider(it, r))) },
+                        colors = sliderColors, modifier = Modifier.weight(1f),
+                    )
+                }
+                "shutter" -> if (r.manualSensor) {
+                    TextButton(onClick = { onChange(m.copy(shutterNs = null)) }) { Text("A", color = if (m.shutterNs == null) Amber else Color.White) }
+                    Slider(
+                        value = ProCamera.toSlider((m.shutterNs ?: 16_666_667L).toDouble(), r.shutterMinNs.toDouble(), r.shutterMaxNs.toDouble()),
+                        onValueChange = { onChange(m.copy(shutterNs = ProCamera.shutterFromSlider(it, r))) },
+                        colors = sliderColors, modifier = Modifier.weight(1f),
+                    )
+                }
+                "focus" -> {
+                    TextButton(onClick = { onChange(m.copy(focus = null)) }) { Text("AF", color = if (m.focus == null) Amber else Color.White) }
+                    Slider(
+                        value = (m.focus ?: 0f) / r.minFocusDioptre,
+                        onValueChange = { onChange(m.copy(focus = it * r.minFocusDioptre)) },
+                        colors = sliderColors, modifier = Modifier.weight(1f),
+                    )
+                    Text("near", color = Muted, fontSize = 11.sp)
+                }
+                else -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ProCamera.wbModes.forEach { (mode, label) -> Choice(label, m.wb == mode) { onChange(m.copy(wb = mode)) } }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProChip(label: String, value: String, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Color(0x55FFB347) else Color(0x33FFFFFF))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(label, color = Muted, fontSize = 10.sp)
+        Text(value, color = if (value == "Auto" || value == "AF") Color.White else Amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

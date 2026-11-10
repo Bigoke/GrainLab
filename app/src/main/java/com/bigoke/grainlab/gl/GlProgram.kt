@@ -23,6 +23,10 @@ data class Effects(
     val vignette: Float = 0f,
     val halation: Float = 0f,
     val lightLeak: Float = 0f,
+    /** Viewfinder only: highlight in-focus edges in red. */
+    val peaking: Float = 0f,
+    /** Viewfinder only: stripes over blown-out highlights. */
+    val zebra: Float = 0f,
 ) {
     companion object {
         fun from(p: EditParams) = Effects(
@@ -76,6 +80,8 @@ uniform float uGrainSize;
 uniform float uVignette;
 uniform float uHalation;
 uniform float uLightLeak;
+uniform float uPeaking;
+uniform float uZebra;
 uniform float uSeed;
 uniform float uAspect;
 in vec2 vTex;
@@ -206,6 +212,15 @@ void main() {
         c += (vec3(g) + chroma * 0.25) * uGrain * 0.2 * mask;
     }
 
+    if (uPeaking > 0.5) {
+        float ex = luma(src(uv + vec2(tx.x, 0.0))) - luma(src(uv - vec2(tx.x, 0.0)));
+        float ey = luma(src(uv + vec2(0.0, tx.y))) - luma(src(uv - vec2(0.0, tx.y)));
+        if (length(vec2(ex, ey)) > 0.16) c = mix(c, vec3(1.0, 0.12, 0.08), 0.85);
+    }
+    if (uZebra > 0.5 && luma(c) > 0.95 && mod(gl_FragCoord.x + gl_FragCoord.y, 16.0) < 7.0) {
+        c = vec3(0.05);
+    }
+
     // Dither before 8-bit output so smooth gradients never show steps.
     c += (hash(gl_FragCoord.xy + 91.7) - 0.5) / 255.0;
 
@@ -235,6 +250,8 @@ class GlProgram(private val external: Boolean) {
     private val uVignette: Int
     private val uHalation: Int
     private val uLightLeak: Int
+    private val uPeaking: Int
+    private val uZebra: Int
     private val uSeed: Int
     private val uAspect: Int
 
@@ -262,6 +279,8 @@ class GlProgram(private val external: Boolean) {
         uVignette = GLES20.glGetUniformLocation(id, "uVignette")
         uHalation = GLES20.glGetUniformLocation(id, "uHalation")
         uLightLeak = GLES20.glGetUniformLocation(id, "uLightLeak")
+        uPeaking = GLES20.glGetUniformLocation(id, "uPeaking")
+        uZebra = GLES20.glGetUniformLocation(id, "uZebra")
         uSeed = GLES20.glGetUniformLocation(id, "uSeed")
         uAspect = GLES20.glGetUniformLocation(id, "uAspect")
     }
@@ -306,6 +325,8 @@ class GlProgram(private val external: Boolean) {
         GLES20.glUniform1f(uVignette, fx.vignette)
         GLES20.glUniform1f(uHalation, fx.halation)
         GLES20.glUniform1f(uLightLeak, fx.lightLeak)
+        GLES20.glUniform1f(uPeaking, fx.peaking)
+        GLES20.glUniform1f(uZebra, fx.zebra)
         GLES20.glUniform1f(uSeed, seed)
         GLES20.glUniform1f(uAspect, aspect)
 

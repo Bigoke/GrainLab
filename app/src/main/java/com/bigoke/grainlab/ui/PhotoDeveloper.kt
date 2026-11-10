@@ -4,14 +4,16 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.net.Uri
 import android.location.Location
+import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
+import com.bigoke.grainlab.camera.NightStacker
 import com.bigoke.grainlab.data.EditHistory
 import com.bigoke.grainlab.data.Settings
 import com.bigoke.grainlab.edit.EditParams
-import com.bigoke.grainlab.io.ExifWriter
 import com.bigoke.grainlab.edit.Pipeline
 import com.bigoke.grainlab.io.BitmapLoader
+import com.bigoke.grainlab.io.ExifWriter
 import com.bigoke.grainlab.io.ExportFormat
 import com.bigoke.grainlab.io.MediaSaver
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +45,17 @@ object PhotoDeveloper {
     private val _errors = MutableStateFlow(0)
     val errors: StateFlow<Int> = _errors.asStateFlow()
 
+    private fun enqueue(block: suspend () -> Pair<Uri, Bitmap>?) {
+        _pending.value += 1
+        scope.launch {
+            lock.withLock {
+                val ok = runCatching { block() }.getOrNull()
+                if (ok != null) _last.value = ok else _errors.value += 1
+            }
+            _pending.value -= 1
+        }
+    }
+
     fun submit(
         context: Context,
         jpeg: ByteArray,
@@ -53,27 +66,29 @@ object PhotoDeveloper {
         location: Location? = null,
     ) {
         val app = context.applicationContext
-        _pending.value += 1
-        scope.launch {
-            lock.withLock {
-                val ok = runCatching { develop(app, jpeg, rotation, params, mirror, keepOriginal, location) }.getOrNull()
-                if (ok != null) _last.value = ok else _errors.value += 1
-            }
-            _pending.value -= 1
+        enqueue {
+            val bmp = decode(jpeg, rotation, mirror) ?: return@enqueue null
+            finish(app, bmp, ExifWriter.fromJpeg(jpeg), params, keepOriginal, location)
         }
     }
 
-    private suspend fun develop(
+    /** Night mode: align and average several frames, then develop the result. */
+    fun submitNight(
         context: Context,
-        jpeg: ByteArray,
-        rotation: Int,
-        p: EditParams,
+        frames: List<Pair<ByteArray, Int>>,
+        params: EditParams,
         mirror: Boolean,
         keepOriginal: Boolean,
-        location: Location?,
-    ): Pair<Uri, Bitmap>? {
-        val exif = ExifWriter.fromJpeg(jpeg)
-        val keepLoc = Settings.keepLocation
+        location: Location? = null,
+    ) {
+        val app = context.applicationContext
+        enqueue {
+            val bmp = NightStacker.stack(frames, mirror) ?: return@enqueue null
+            finish(app, bmp, frames.firstOrNull()?.let { ExifWriter.fromJpeg(it.first) }, params, keepOriginal, location)
+        }
+    }
+
+    private fun decode(jpeg: ByteArray, rotation: Int, mirror: Boolean): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
         var sample = 1
@@ -85,7 +100,6 @@ object PhotoDeveloper {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             },
         ) ?: return null
-
         var bmp = decoded
         if (rotation != 0 || mirror) {
             val m = Matrix()
@@ -94,8 +108,18 @@ object PhotoDeveloper {
             bmp = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, m, true)
             if (bmp !== decoded) decoded.recycle()
         }
-        bmp = BitmapLoader.scaleToMax(bmp, 8192)
+        return BitmapLoader.scaleToMax(bmp, 8192)
+    }
 
+    private suspend fun finish(
+        context: Context,
+        bmp: Bitmap,
+        exif: ExifInterface?,
+        p: EditParams,
+        keepOriginal: Boolean,
+        location: Location?,
+    ): Pair<Uri, Bitmap>? {
+        val keepLoc = Settings.keepLocation
         val ts = MediaSaver.timestamp()
         if (keepOriginal) {
             MediaSaver.saveBitmap(context, bmp, ExportFormat.JPEG, 95, "GrainLab_${ts}_original")?.let {
