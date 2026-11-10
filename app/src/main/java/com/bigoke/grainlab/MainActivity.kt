@@ -31,6 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import com.bigoke.grainlab.ui.BatchScreen
 import com.bigoke.grainlab.ui.CameraScreen
 import com.bigoke.grainlab.ui.EditorScreen
+import com.bigoke.grainlab.ui.GalleryScreen
+import com.bigoke.grainlab.ui.OnboardingScreen
 import com.bigoke.grainlab.ui.GrainLabTheme
 import com.bigoke.grainlab.ui.Ink
 import com.bigoke.grainlab.ui.TemplatesScreen
@@ -40,6 +42,8 @@ sealed interface Screen {
     data class Editor(val uri: Uri) : Screen
     data object Templates : Screen
     data object Batch : Screen
+    data object Gallery : Screen
+    data object Onboarding : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -90,7 +94,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun App(shared: Uri?) {
     var stack by remember {
-        mutableStateOf(if (shared != null) listOf<Screen>(Screen.Camera, Screen.Editor(shared)) else listOf<Screen>(Screen.Camera))
+        mutableStateOf(
+            when {
+                shared != null -> listOf<Screen>(Screen.Camera, Screen.Editor(shared))
+                !Settings.onboarded -> listOf<Screen>(Screen.Camera, Screen.Onboarding)
+                else -> listOf<Screen>(Screen.Camera)
+            },
+        )
     }
     fun push(s: Screen) { stack = stack + s }
     fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
@@ -125,10 +135,13 @@ fun App(shared: Uri?) {
                 onOpenEditor = { push(Screen.Editor(it)) },
                 onOpenTemplates = { push(Screen.Templates) },
                 onOpenBatch = { push(Screen.Batch) },
+                onOpenGallery = { push(Screen.Gallery) },
             )
             is Screen.Editor -> EditorScreen(uri = s.uri, onBack = { pop() })
             Screen.Templates -> TemplatesScreen(onBack = { pop() })
             Screen.Batch -> BatchScreen(onBack = { pop() })
+            Screen.Gallery -> GalleryScreen(onBack = { pop() }, onOpenEditor = { push(Screen.Editor(it)) })
+            Screen.Onboarding -> OnboardingScreen(onDone = { Settings.onboarded = true; pop() })
         }
     }
 }

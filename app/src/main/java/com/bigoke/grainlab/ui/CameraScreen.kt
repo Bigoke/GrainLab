@@ -224,7 +224,7 @@ private fun lookList(templates: List<Template>, packFilter: String?): List<Look>
 }
 
 @Composable
-fun CameraScreen(onOpenEditor: (Uri) -> Unit, onOpenTemplates: () -> Unit, onOpenBatch: () -> Unit) {
+fun CameraScreen(onOpenEditor: (Uri) -> Unit, onOpenTemplates: () -> Unit, onOpenBatch: () -> Unit, onOpenGallery: () -> Unit) {
     val context = LocalContext.current
     var camGranted by remember { mutableStateOf(context.granted(Manifest.permission.CAMERA)) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -255,7 +255,7 @@ fun CameraScreen(onOpenEditor: (Uri) -> Unit, onOpenTemplates: () -> Unit, onOpe
         }
         return
     }
-    CameraView(onOpenEditor, onOpenTemplates, onOpenBatch, openGallery)
+    CameraView(onOpenEditor, onOpenTemplates, onOpenBatch, openGallery, onOpenGallery)
 }
 
 @OptIn(ExperimentalCamera2Interop::class)
@@ -266,6 +266,7 @@ private fun CameraView(
     onOpenTemplates: () -> Unit,
     onOpenBatch: () -> Unit,
     onGallery: () -> Unit,
+    onOpenGallery: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -995,7 +996,10 @@ private fun CameraView(
                     OutlinedButton(onClick = { showSettings = false; onOpenTemplates() }) { Text("My templates") }
                     OutlinedButton(onClick = { showSettings = false; onOpenBatch() }) { Text("Batch edit") }
                 }
-                TextButton(onClick = { showSettings = false; onGallery() }) { Text("Edit a photo from gallery") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showSettings = false; onOpenGallery() }) { Text("GrainLab gallery") }
+                    OutlinedButton(onClick = { showSettings = false; onGallery() }) { Text("Edit a photo") }
+                }
             }
         }
 

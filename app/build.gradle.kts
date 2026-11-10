@@ -82,6 +82,10 @@ dependencies {
     // On-device subject detection for "Subject" masks (model provided by Google Play services).
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
 
+    // Template QR codes: create (ZXing) and scan (Google code scanner, no camera permission needed).
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

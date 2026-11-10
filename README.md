@@ -1,30 +1,46 @@
 # GrainLab
 
-An Android photo editor and camera with classic film looks, one-tap auto tools and reusable edit templates.
+An Android film camera and photo editor: 60+ classic film looks, pro camera controls and a pro editor with masks, curves and healing. Everything runs on the phone.
 
 **Download the latest APK:** https://github.com/Bigoke/GrainLab/releases/latest/download/GrainLab.apk
 
-## Features
+## Camera
+- Film looks or your own templates live in the viewfinder; swipe on the picture to change look
+- Lens buttons (ultra-wide, main, 2x, telephoto) built from the phone's cameras
+- PRO mode: manual ISO, shutter speed, focus and white balance; focus peaking, zebras, live histogram, level
+- Zero-shutter-lag capture, burst (hold the shutter), night mode (6 frames aligned and averaged)
+- Volume buttons as shutter, haptics, shutter sound, timer, grid, optional location
+- Video in HD / Full HD / 4K, 24 fps cinematic, stabilisation, pause/resume; the look is baked into the saved clip
+- Every setting is remembered
 
-- **60+ film looks** in packs: Kodak, Fujifilm, Agfa, Ilford, Polaroid, Hasselblad, Urban, Winter and Vintage, each with a strength slider
-- **Auto tools:** Auto fix (exposure, levels, white balance), Auto align (horizon straightening and vertical keystone), Auto noise reduction
-- **Adjustments:** exposure, contrast, highlights, shadows, whites, blacks, fade, temperature, tint, vibrance, saturation, HSL per colour, split-tone grading, texture, clarity, dehaze, sharpening, noise reduction, grain, vignette, halation, light leaks, borders, date stamp
-- **Crop and geometry:** rotate, flip, ratio crops, straighten, vertical and horizontal perspective
-- **Templates:** save any edit, mark favourites, rename, share as a file, import
-- **Camera:** live film look or template in the viewfinder, flash, timer, grid, 4:3/16:9, tap to focus, pinch zoom, exposure, optional original copy
-- **Camcorder:** HD / Full HD / 4K, pause and resume; the look is baked into the saved video
-- **Batch edit:** apply a template or film look to up to 50 photos
-- Non-destructive editing with undo/redo, a before/after split slider and hold-to-compare; export as JPEG, PNG or WebP
+## Editor
+- Live GPU preview: sliders respond instantly
+- Auto fix, auto align (horizon + keystone), auto noise reduction
+- Light, colour, tone curve (RGB/R/G/B), HSL, split-tone grading, texture, clarity, dehaze, sharpening, noise reduction
+- Masks: radial, gradient, brush, automatic sky and subject (on-device ML) with their own exposure, contrast, saturation, warmth
+- Healing brush, free crop with ratio lock, straighten, perspective
+- Grain, halation, vignette, light leaks, borders, date stamp
+- Before/after split slider, hold for original, full screen, pinch zoom, clipping warning
+- Undo/redo, copy/paste edits, re-edit saved photos from the original, landscape layout
+- Export up to full 50 MP resolution, JPEG/PNG/WebP, Instagram 4:5, Story 9:16, WhatsApp, watermark; camera details kept
+
+## Library
+- Templates with favourites, previews, file sharing and QR codes (scan to import)
+- GrainLab gallery of everything you shot and exported, with favourites, share and delete
+- Batch apply a template or look to up to 50 photos
+
+## Film packs
+Kodak, Fujifilm, Agfa, Ilford, Polaroid, Hasselblad, Urban, Winter and Vintage. A "brand-free names" option
+(camera settings) switches to generic names for publishing.
 
 ## How it works
-
-Every colour and tone setting is baked into one 33×33×33 lookup table. The same table drives the editor preview,
-the live camera (OpenGL ES 3 shader) and recorded video (Media3 Transformer), so a look matches everywhere.
-Detail effects (sharpening, clarity, noise reduction, grain, halation, vignette, light leaks) run in the shader.
-
-Photos are saved to `Pictures/GrainLab`, videos to `Movies/GrainLab`.
+All colour and tone settings are baked into one 33×33×33 half-float lookup table used by the editor preview,
+the live camera (OpenGL ES 3 shader) and video (Media3 Transformer), so a look matches everywhere. Detail effects
+and masks run in the shader. Large photos are rendered in strips so full sensor resolution fits on the GPU.
 
 ## Build
+Pushing to `main` runs the unit tests, builds the APK with GitHub Actions and publishes it at the link above.
+Builds are signed with a fixed key in the repo, so each new APK installs over the previous one.
+Locally: `./gradlew testDebugUnitTest assembleDebug` (JDK 17, Android SDK 35).
 
-Pushing to `main` builds a debug APK with GitHub Actions and publishes it at the link above.
-Locally: `./gradlew assembleDebug` (JDK 17, Android SDK 35).
+Privacy: see [PRIVACY.md](PRIVACY.md).
