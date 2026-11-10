@@ -102,6 +102,15 @@ object Settings {
     var exportSize: Int
         get() = i("exportSize", 0)
         set(v) = put { putInt("exportSize", v) }
+    var watermark: Boolean
+        get() = b("watermark", false)
+        set(v) = put { putBoolean("watermark", v) }
+    var watermarkText: String
+        get() = s("watermarkText") ?: "Shot on GrainLab"
+        set(v) = put { putString("watermarkText", v) }
+    var clipWarning: Boolean
+        get() = b("clipWarning", false)
+        set(v) = put { putBoolean("clipWarning", v) }
     var exportQuality: Int
         get() = i("exportQuality", 92)
         set(v) = put { putInt("exportQuality", v) }

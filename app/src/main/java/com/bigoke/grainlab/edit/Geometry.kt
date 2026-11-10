@@ -32,9 +32,44 @@ object Geometry {
         val s = p["straighten"]
         if (abs(s) > 0.01f) bmp = replace(bmp, src, straighten(bmp, s))
 
-        val crop = p["crop"].roundToInt()
-        if (crop in 1 until Adjustments.cropRatios.size) bmp = replace(bmp, src, cropRatio(bmp, Adjustments.cropRatios[crop]))
+        if (p.hasCropRect) {
+            bmp = replace(bmp, src, cropRect(bmp, p["cropL"], p["cropT"], p["cropR"], p["cropB"]))
+        } else {
+            // Older edits and templates store only a ratio: centre crop.
+            val crop = p["crop"].roundToInt()
+            if (crop in 1 until Adjustments.cropRatios.size) bmp = replace(bmp, src, cropRatio(bmp, Adjustments.cropRatios[crop]))
+        }
+        if (p.spots.isNotEmpty()) bmp = replace(bmp, src, Heal.apply(bmp, p.spots))
         return bmp
+    }
+
+    /** Geometry for the crop screen: everything except the crop itself and healing. */
+    fun uncropped(src: Bitmap, p: EditParams): Bitmap =
+        apply(src, p.withAll(mapOf("crop" to 0f, "cropL" to 0f, "cropT" to 0f, "cropR" to 1f, "cropB" to 1f)).copy(spots = emptyList()))
+
+    private fun cropRect(b: Bitmap, l: Float, t: Float, r: Float, btm: Float): Bitmap {
+        val w = b.width
+        val h = b.height
+        if (w < 16 || h < 16) return b
+        val x0 = (l * w).roundToInt().coerceIn(0, w - 8)
+        val y0 = (t * h).roundToInt().coerceIn(0, h - 8)
+        val x1 = (r * w).roundToInt().coerceIn(x0 + 8, w)
+        val y1 = (btm * h).roundToInt().coerceIn(y0 + 8, h)
+        return Bitmap.createBitmap(b, x0, y0, x1 - x0, y1 - y0)
+    }
+
+    /** A centred crop rectangle (l, t, r, b) for a ratio on a photo of the given shape. */
+    fun ratioRect(width: Int, height: Int, ratio: Float): FloatArray {
+        if (ratio <= 0f) return floatArrayOf(0f, 0f, 1f, 1f)
+        val r = if (width >= height) max(ratio, 1f / ratio) else min(ratio, 1f / ratio)
+        val current = width.toFloat() / height
+        return if (current > r) {
+            val fw = r / current
+            floatArrayOf((1f - fw) / 2f, 0f, (1f + fw) / 2f, 1f)
+        } else {
+            val fh = current / r
+            floatArrayOf(0f, (1f - fh) / 2f, 1f, (1f + fh) / 2f)
+        }
     }
 
     private fun replace(old: Bitmap, original: Bitmap, new: Bitmap): Bitmap {

@@ -35,6 +35,16 @@ data class Effects(
             grain = p["grain"], grainSize = p["grainSize"], vignette = p["vignette"],
             halation = p["halation"], lightLeak = p["lightLeak"],
         )
+
+        /** Exposure, contrast, saturation, temperature for each mask (4 floats each). */
+        fun maskParams(p: EditParams): FloatArray {
+            val out = FloatArray(16)
+            p.masks.take(4).forEachIndexed { i, m ->
+                out[i * 4] = m.exposure; out[i * 4 + 1] = m.contrast
+                out[i * 4 + 2] = m.saturation; out[i * 4 + 3] = m.temperature
+            }
+            return out
+        }
     }
 }
 
@@ -82,6 +92,17 @@ uniform float uHalation;
 uniform float uLightLeak;
 uniform float uPeaking;
 uniform float uZebra;
+uniform sampler2D uMask0;
+uniform sampler2D uMask1;
+uniform sampler2D uMask2;
+uniform sampler2D uMask3;
+uniform vec4 uMaskP0;
+uniform vec4 uMaskP1;
+uniform vec4 uMaskP2;
+uniform vec4 uMaskP3;
+uniform int uMaskCount;
+uniform float uSplit;
+uniform float uClip;
 uniform float uSeed;
 uniform float uAspect;
 in vec2 vTex;
@@ -95,8 +116,25 @@ float hash(vec2 p) {
     return fract(p.x * p.y);
 }
 
+// Local adjustment: exposure, contrast, saturation, temperature, weighted by the mask.
+vec3 local(vec3 c, float w, vec4 p) {
+    if (w <= 0.002) return c;
+    c *= pow(2.0, p.x * w);
+    c = (c - 0.5) * (1.0 + p.y * w * 0.8) + 0.5;
+    float l = luma(c);
+    c = l + (c - l) * (1.0 + p.z * w);
+    c.r *= 1.0 + 0.15 * p.w * w;
+    c.b *= 1.0 - 0.15 * p.w * w;
+    return clamp(c, 0.0, 1.0);
+}
+
 void main() {
     vec2 uv = vTex;
+    if (uv.x < uSplit) {
+        // Before/after: the left part shows the untouched photo.
+        fragColor = vec4(src(uv), 1.0);
+        return;
+    }
     vec2 tx = uTexel * uScale;
     vec3 c = src(uv);
 
@@ -169,6 +207,11 @@ void main() {
     c = clamp(c, 0.0, 1.0);
     c = texture(uLut, c * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize).rgb;
 
+    if (uMaskCount > 0) c = local(c, texture(uMask0, uv).r, uMaskP0);
+    if (uMaskCount > 1) c = local(c, texture(uMask1, uv).r, uMaskP1);
+    if (uMaskCount > 2) c = local(c, texture(uMask2, uv).r, uMaskP2);
+    if (uMaskCount > 3) c = local(c, texture(uMask3, uv).r, uMaskP3);
+
     if (uHalation > 0.001) {
         // Two rings of samples approximate the soft red glow film gets around bright lights.
         float glow = 0.0;
@@ -221,6 +264,12 @@ void main() {
         c = vec3(0.05);
     }
 
+    if (uClip > 0.5) {
+        // Clipping warning: blown highlights red, crushed shadows blue.
+        if (max(c.r, max(c.g, c.b)) >= 0.995) c = vec3(1.0, 0.1, 0.1);
+        else if (min(c.r, min(c.g, c.b)) <= 0.004) c = vec3(0.1, 0.3, 1.0);
+    }
+
     // Dither before 8-bit output so smooth gradients never show steps.
     c += (hash(gl_FragCoord.xy + 91.7) - 0.5) / 255.0;
 
@@ -251,6 +300,11 @@ class GlProgram(private val external: Boolean) {
     private val uHalation: Int
     private val uLightLeak: Int
     private val uPeaking: Int
+    private val uMaskTex = IntArray(4)
+    private val uMaskP = IntArray(4)
+    private val uMaskCount: Int
+    private val uSplit: Int
+    private val uClip: Int
     private val uZebra: Int
     private val uSeed: Int
     private val uAspect: Int
@@ -280,6 +334,13 @@ class GlProgram(private val external: Boolean) {
         uHalation = GLES20.glGetUniformLocation(id, "uHalation")
         uLightLeak = GLES20.glGetUniformLocation(id, "uLightLeak")
         uPeaking = GLES20.glGetUniformLocation(id, "uPeaking")
+        for (i in 0..3) {
+            uMaskTex[i] = GLES20.glGetUniformLocation(id, "uMask$i")
+            uMaskP[i] = GLES20.glGetUniformLocation(id, "uMaskP$i")
+        }
+        uMaskCount = GLES20.glGetUniformLocation(id, "uMaskCount")
+        uSplit = GLES20.glGetUniformLocation(id, "uSplit")
+        uClip = GLES20.glGetUniformLocation(id, "uClip")
         uZebra = GLES20.glGetUniformLocation(id, "uZebra")
         uSeed = GLES20.glGetUniformLocation(id, "uSeed")
         uAspect = GLES20.glGetUniformLocation(id, "uAspect")
@@ -299,6 +360,12 @@ class GlProgram(private val external: Boolean) {
         posScaleY: Float = 1f,
         rotation: Float = 0f,
         posOffsetY: Float = 0f,
+        posOffsetX: Float = 0f,
+        masks: IntArray? = null,
+        maskParams: FloatArray? = null,
+        maskCount: Int = 0,
+        split: Float = -1f,
+        clip: Boolean = false,
     ) {
         GLES20.glUseProgram(id)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -310,7 +377,18 @@ class GlProgram(private val external: Boolean) {
 
         GLES20.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES20.glUniform2f(uPosScale, posScaleX, posScaleY)
-        GLES20.glUniform2f(uPosOffset, 0f, posOffsetY)
+        GLES20.glUniform2f(uPosOffset, posOffsetX, posOffsetY)
+        val count = if (masks == null || maskParams == null) 0 else minOf(maskCount, masks.size, 4)
+        for (i in 0..3) {
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2 + i)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (i < count) masks!![i] else 0)
+            GLES20.glUniform1i(uMaskTex[i], 2 + i)
+            if (i < count) GLES20.glUniform4f(uMaskP[i], maskParams!![i * 4], maskParams[i * 4 + 1], maskParams[i * 4 + 2], maskParams[i * 4 + 3])
+        }
+        GLES20.glUniform1i(uMaskCount, count)
+        GLES20.glUniform1f(uSplit, split)
+        GLES20.glUniform1f(uClip, if (clip) 1f else 0f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glUniform1f(uRot, rotation)
         GLES20.glUniform2f(uTexel, texelW, texelH)
         GLES20.glUniform1f(uScale, scale)

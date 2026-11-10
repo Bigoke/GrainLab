@@ -44,7 +44,15 @@ object GlProcessor {
     /** Reference size the effect radii and grain size are tuned for. */
     private const val REFERENCE_SIDE = 1600f
 
-    suspend fun process(src: Bitmap, params: EditParams, lut: FloatArray, seed: Float = 0.37f): Bitmap =
+    private val maskTex = IntArray(4)
+
+    suspend fun process(
+        src: Bitmap,
+        params: EditParams,
+        lut: FloatArray,
+        seed: Float = 0.37f,
+        masks: List<Bitmap> = emptyList(),
+    ): Bitmap =
         withContext(dispatcher) {
             init()
             val input = if (max(src.width, src.height) > maxTextureSize) {
@@ -68,6 +76,13 @@ object GlProcessor {
             ensureFbo(w, stripH)
             val scale = (max(w, h) / REFERENCE_SIDE).coerceIn(0.25f, 8f)
             val fx = Effects.from(params)
+            val maskCount = minOf(masks.size, 4)
+            for (i in 0 until maskCount) {
+                if (maskTex[i] == 0) maskTex[i] = GlUtil.newTexture(GLES20.GL_TEXTURE_2D)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex[i])
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, masks[i], 0)
+            }
+            val maskParams = Effects.maskParams(params)
             val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
             var y0 = 0
@@ -84,6 +99,9 @@ object GlProcessor {
                     scale = scale,
                     aspect = w.toFloat() / h,
                     seed = seed,
+                    masks = maskTex,
+                    maskParams = maskParams,
+                    maskCount = maskCount,
                 )
                 buf.position(y0 * w * 4)
                 GLES20.glReadPixels(0, 0, w, rows, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)

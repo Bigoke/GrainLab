@@ -37,6 +37,12 @@ object LutBuilder {
         val balance = p["gradeBalance"]
         val shColor = hueColor(p["shadowHue"])
         val hiColor = hueColor(p["highlightHue"])
+        /** Tone curves (all channels, then red, green, blue); null when untouched. */
+        val curves: Array<Curve?> = Array(4) { ci ->
+            val ch = Adjustments.curveChannels[ci]
+            val ys = FloatArray(5) { p[Adjustments.curveKey(ch, it)] }
+            if ((0..4).all { abs(ys[it] - it / 4f) < 1e-4f }) null else Curve(ys)
+        }
     }
 
     fun build(p: EditParams): FloatArray {
@@ -137,6 +143,10 @@ object LutBuilder {
             val k = (1f + x.saturation) * (1f + x.vibrance * (1f - sat))
             for (j in 0..2) c[j] = l + (c[j] - l) * k
         }
+
+        // 6b. Tone curves
+        x.curves[0]?.let { cm -> for (j in 0..2) c[j] = cm.eval(c[j].coerceIn(0f, 1f)) }
+        for (j in 0..2) x.curves[j + 1]?.let { c[j] = it.eval(c[j].coerceIn(0f, 1f)) }
 
         // 7. HSL per colour band
         if (x.hslActive) applyHsl(c, x)

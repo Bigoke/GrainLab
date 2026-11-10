@@ -24,6 +24,10 @@ object Pipeline {
         return lut
     }
 
+    /** Identifies a photo + framing so automatic masks (sky, subject) can be reused. */
+    fun photoKey(src: Bitmap, p: EditParams): String =
+        "${System.identityHashCode(src)}-${src.width}x${src.height}-" + p.geometryOnly().values.entries.sortedBy { it.key }.joinToString()
+
     suspend fun render(
         src: Bitmap,
         p: EditParams,
@@ -33,7 +37,11 @@ object Pipeline {
     ): Bitmap {
         val geo = withContext(Dispatchers.Default) { Geometry.apply(src, p) }
         val lut = withContext(Dispatchers.Default) { lutFor(p, useCache) }
-        val out = GlProcessor.process(geo, p, lut, seed)
+        val masks = if (p.masks.isEmpty()) emptyList() else withContext(Dispatchers.Default) {
+            MaskRaster.render(p.masks, geo, photoKey(src, p))
+        }
+        val out = GlProcessor.process(geo, p, lut, seed, masks)
+        masks.forEach { it.recycle() }
         if (geo !== src) geo.recycle()
         return if (finishing) withContext(Dispatchers.Default) { Finishing.apply(out, p) } else out
     }

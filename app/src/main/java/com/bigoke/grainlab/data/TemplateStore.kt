@@ -20,8 +20,10 @@ data class Template(
 ) {
     /** The params to apply on top of an existing edit (keeps that edit's crop unless included). */
     fun applyTo(current: EditParams): EditParams {
-        val base = if (includesGeometry) params else params.withoutGeometry()
-        return if (includesGeometry) base else base.withAll(current.geometryOnly().values)
+        val base = if (includesGeometry) params.copy(spots = emptyList(), masks = emptyList()) else params.withoutGeometry()
+        val withGeo = if (includesGeometry) base else base.withAll(current.geometryOnly().values)
+        // Healing spots and masks belong to the photo, so they are kept.
+        return withGeo.copy(spots = current.spots, masks = current.masks)
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -73,7 +75,7 @@ object TemplateStore {
     }
 
     fun create(name: String, params: EditParams, includesGeometry: Boolean): Template {
-        val stored = if (includesGeometry) params else params.withoutGeometry()
+        val stored = (if (includesGeometry) params else params.withoutGeometry()).copy(spots = emptyList(), masks = emptyList())
         val t = Template(UUID.randomUUID().toString(), name.ifBlank { "My template" }, stored, includesGeometry)
         save(t)
         return t

@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -95,6 +96,14 @@ fun App(shared: Uri?) {
     fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
 
     BackHandler(enabled = stack.size > 1) { pop() }
+
+    // The camera stays upright; the editor and other screens can turn to landscape.
+    val activity = LocalContext.current as? android.app.Activity
+    val current = stack.last()
+    LaunchedEffect(current) {
+        activity?.requestedOrientation = if (current is Screen.Camera) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+    }
 
     val context = LocalContext.current
     var crash by remember { mutableStateOf(CrashReporter.pendingReport(context)) }
