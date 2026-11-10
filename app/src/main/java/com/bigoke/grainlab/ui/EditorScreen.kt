@@ -191,7 +191,7 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
     }
 
     LaunchedEffect(uri) {
-        val w = withContext(Dispatchers.IO) { runCatching { BitmapLoader.load(context, uri, 4096) }.getOrNull() }
+        val w = withContext(Dispatchers.IO) { runCatching { BitmapLoader.load(context, uri, 8192) }.getOrNull() }
         if (w == null) { loadFailed = true; return@LaunchedEffect }
         working = w
         previewBase = withContext(Dispatchers.Default) { BitmapLoader.scaleToMax(w, 2048) }
@@ -656,7 +656,7 @@ private fun FilmPanel(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             ToolChip("All", pack == null, false) { pack = null }
-            FilmLooks.packs.forEach { p -> ToolChip(p, pack == p, FilmLooks.byId(selectedId)?.pack == p) { pack = p } }
+            FilmLooks.packs.forEach { p -> ToolChip(FilmLooks.packLabel(p), pack == p, FilmLooks.byId(selectedId)?.pack == p) { pack = p } }
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 12.dp),
@@ -819,7 +819,7 @@ private fun SaveTemplateDialog(onDismiss: () -> Unit, onSave: (String, Boolean) 
 private fun ExportDialog(onDismiss: () -> Unit, onExport: (ExportFormat, Int, Int, Boolean) -> Unit) {
     val formats = ExportFormat.entries
     var format by remember { mutableStateOf(formats[Settings.exportFormat.coerceIn(0, formats.size - 1)]) }
-    val sizes = listOf("Full" to 4096, "2048 px" to 2048, "1080 px" to 1080)
+    val sizes = listOf("Full" to 16384, "4096 px" to 4096, "2048 px" to 2048, "1080 px" to 1080)
     var sizeIndex by remember { mutableIntStateOf(Settings.exportSize.coerceIn(0, sizes.size - 1)) }
     var quality by remember { mutableFloatStateOf(Settings.exportQuality.toFloat().coerceIn(60f, 100f)) }
     fun go(share: Boolean) {

@@ -9,9 +9,9 @@ import kotlinx.coroutines.withContext
 object Pipeline {
     private val lock = Any()
     private var cachedKey: String? = null
-    private var cachedLut: ByteArray? = null
+    private var cachedLut: FloatArray? = null
 
-    fun lutFor(p: EditParams, useCache: Boolean = true): ByteArray {
+    fun lutFor(p: EditParams, useCache: Boolean = true): FloatArray {
         val key = p.lutSignature()
         if (useCache) synchronized(lock) {
             if (key == cachedKey) cachedLut?.let { return it }

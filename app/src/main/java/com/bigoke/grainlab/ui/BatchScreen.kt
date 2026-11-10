@@ -106,7 +106,7 @@ fun BatchScreen(onBack: () -> Unit) {
                     Text(
                         when (l) {
                             is Look.Tmpl -> "Your template"
-                            is Look.Film -> l.film.pack + " · " + l.film.note
+                            is Look.Film -> FilmLooks.packLabel(l.film.pack) + " · " + l.film.note
                             Look.None -> ""
                         },
                         color = if (sel) Color(0xFF5A3D00) else Muted, fontSize = 12.sp,
@@ -134,7 +134,7 @@ fun BatchScreen(onBack: () -> Unit) {
                         for (u in list) {
                             withContext(Dispatchers.IO) {
                                 runCatching {
-                                    val src = BitmapLoader.load(context, u, 4096) ?: return@runCatching
+                                    val src = BitmapLoader.load(context, u, 8192) ?: return@runCatching
                                     val out = Pipeline.render(src, p)
                                     MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 92, "GrainLab_${MediaSaver.timestamp()}")
                                     out.recycle()

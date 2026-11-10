@@ -17,7 +17,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.bigoke.grainlab.data.CrashReporter
+import com.bigoke.grainlab.data.Settings
 import com.bigoke.grainlab.data.TemplateStore
+import com.bigoke.grainlab.edit.FilmLooks
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 import com.bigoke.grainlab.ui.BatchScreen
 import com.bigoke.grainlab.ui.CameraScreen
 import com.bigoke.grainlab.ui.EditorScreen
@@ -35,8 +42,10 @@ sealed interface Screen {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
         TemplateStore.init(this)
-        com.bigoke.grainlab.data.Settings.init(this)
+        Settings.init(this)
+        FilmLooks.safeNames = Settings.storeSafeNames
         enableEdgeToEdge()
         val shared = sharedImage(intent)
         setContent {
@@ -70,6 +79,20 @@ fun App(shared: Uri?) {
     fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
 
     BackHandler(enabled = stack.size > 1) { pop() }
+
+    val context = LocalContext.current
+    var crash by remember { mutableStateOf(CrashReporter.pendingReport(context)) }
+    crash?.let { report ->
+        AlertDialog(
+            onDismissRequest = { CrashReporter.clear(context); crash = null },
+            title = { Text("GrainLab closed unexpectedly") },
+            text = { Text("A crash report was saved on your phone. Share it so the problem can be fixed?") },
+            confirmButton = {
+                TextButton(onClick = { CrashReporter.share(context, report); CrashReporter.clear(context); crash = null }) { Text("Share report") }
+            },
+            dismissButton = { TextButton(onClick = { CrashReporter.clear(context); crash = null }) { Text("Not now") } },
+        )
+    }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         when (val s = stack.last()) {

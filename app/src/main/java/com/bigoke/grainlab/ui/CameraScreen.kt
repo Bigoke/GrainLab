@@ -770,7 +770,7 @@ private fun CameraView(
                         (listOf<String?>(null, MINE) + FilmLooks.packs).forEach { f ->
                             val sel = packFilter == f
                             Text(
-                                f ?: "All",
+                                FilmLooks.packLabel(f),
                                 color = if (sel) Color(0xFF2B1A00) else Color.White,
                                 fontSize = 12.sp,
                                 modifier = Modifier
@@ -992,7 +992,7 @@ private fun LookStrip(looks: List<Look>, selected: Look, onSelect: (Look) -> Uni
             val isSel = l.key == selected.key
             val sub = when (l) {
                 Look.None -> "No filter"
-                is Look.Film -> l.film.pack
+                is Look.Film -> FilmLooks.packLabel(l.film.pack)
                 is Look.Tmpl -> "Template"
             }
             Column(

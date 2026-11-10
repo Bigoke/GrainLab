@@ -8,7 +8,8 @@ import kotlin.math.pow
 /**
  * Bakes every colour and tone setting (light, colour, HSL, grading, film look) into one
  * 33x33x33 lookup table. The same table drives the editor, the live camera and video.
- * Layout: RGB bytes, index = ((b * N + g) * N + r) * 3.
+ * Layout: RGB floats (0..1), index = ((b * N + g) * N + r) * 3. Uploaded as half floats, so
+ * smooth gradients such as skies do not band.
  */
 object LutBuilder {
     const val N = 33
@@ -38,35 +39,34 @@ object LutBuilder {
         val hiColor = hueColor(p["highlightHue"])
     }
 
-    fun build(p: EditParams): ByteArray {
+    fun build(p: EditParams): FloatArray {
         val ctx = Ctx(p)
-        val out = ByteArray(N * N * N * 3)
+        val out = FloatArray(N * N * N * 3)
         val c = FloatArray(3)
         val tmp = FloatArray(3)
         var i = 0
         for (b in 0 until N) for (g in 0 until N) for (r in 0 until N) {
             c[0] = r / (N - 1f); c[1] = g / (N - 1f); c[2] = b / (N - 1f)
             process(c, tmp, ctx)
-            out[i++] = toByte(c[0]); out[i++] = toByte(c[1]); out[i++] = toByte(c[2])
+            out[i++] = c[0].coerceIn(0f, 1f); out[i++] = c[1].coerceIn(0f, 1f); out[i++] = c[2].coerceIn(0f, 1f)
         }
         return out
     }
 
     /** Media3 SingleColorLut wants cube[r][g][b] as ARGB ints. */
-    fun toCube(lut: ByteArray): Array<Array<IntArray>> =
+    fun toCube(lut: FloatArray): Array<Array<IntArray>> =
         Array(N) { r ->
             Array(N) { g ->
                 IntArray(N) { b ->
                     val i = ((b * N + g) * N + r) * 3
-                    val rr = lut[i].toInt() and 0xFF
-                    val gg = lut[i + 1].toInt() and 0xFF
-                    val bb = lut[i + 2].toInt() and 0xFF
+                    val rr = (lut[i] * 255f + 0.5f).toInt().coerceIn(0, 255)
+                    val gg = (lut[i + 1] * 255f + 0.5f).toInt().coerceIn(0, 255)
+                    val bb = (lut[i + 2] * 255f + 0.5f).toInt().coerceIn(0, 255)
                     (0xFF shl 24) or (rr shl 16) or (gg shl 8) or bb
                 }
             }
         }
 
-    private fun toByte(v: Float): Byte = (v.coerceIn(0f, 1f) * 255f + 0.5f).toInt().toByte()
 
     private fun luma(c: FloatArray) = 0.299f * c[0] + 0.587f * c[1] + 0.114f * c[2]
     private fun toLin(v: Float) = if (v <= 0f) 0f else v.pow(2.2f)

@@ -58,6 +58,16 @@ object Settings {
         get() = s("packFilter")
         set(v) = put { putString("packFilter", v) }
 
+    var keepLocation: Boolean
+        get() = b("keepLocation", false)
+        set(v) = put { putBoolean("keepLocation", v) }
+    var storeSafeNames: Boolean
+        get() = b("storeSafeNames", false)
+        set(v) = put { putBoolean("storeSafeNames", v) }
+    var onboarded: Boolean
+        get() = b("onboarded", false)
+        set(v) = put { putBoolean("onboarded", v) }
+
     // ---- Editor ----
     var editorTool: Int
         get() = i("editorTool", 1)

@@ -57,7 +57,7 @@ private fun rgb(r: Float, g: Float, b: Float) = floatArrayOf(r, g, b)
  */
 class FilmLook(
     val id: String,
-    val name: String,
+    private val brandName: String,
     val pack: String,
     val note: String,
     val r: Curve = Curve.IDENTITY,
@@ -71,5 +71,9 @@ class FilmLook(
     val highlightTint: FloatArray = rgb(0f, 0f, 0f),
     val bw: FloatArray? = null,
     val effects: Map<String, Float> = emptyMap(),
-)
+) {
+    /** Display name; generic wording when "store-safe names" is on. */
+    val name: String
+        get() = if (FilmLooks.safeNames) FilmLooks.safeName(id) ?: brandName else brandName
+}
 

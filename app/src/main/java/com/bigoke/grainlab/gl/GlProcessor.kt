@@ -33,7 +33,7 @@ object GlProcessor {
     private var program: GlProgram? = null
     private var srcTex = 0
     private var lutTex = 0
-    private var lastLut: ByteArray? = null
+    private var lastLut: FloatArray? = null
     private var fbo = 0
     private var fboTex = 0
     private var fboW = 0
@@ -44,7 +44,7 @@ object GlProcessor {
     /** Reference size the effect radii and grain size are tuned for. */
     private const val REFERENCE_SIDE = 1600f
 
-    suspend fun process(src: Bitmap, params: EditParams, lut: ByteArray, seed: Float = 0.37f): Bitmap =
+    suspend fun process(src: Bitmap, params: EditParams, lut: FloatArray, seed: Float = 0.37f): Bitmap =
         withContext(dispatcher) {
             init()
             val input = if (max(src.width, src.height) > maxTextureSize) {
@@ -62,22 +62,33 @@ object GlProcessor {
                 GlUtil.uploadLut(lutTex, lut)
                 lastLut = lut
             }
-            ensureFbo(w, h)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
-            GLES20.glViewport(0, 0, w, h)
-            val scale = (max(w, h) / REFERENCE_SIDE).coerceIn(0.25f, 4f)
-            program!!.draw(
-                srcTex = srcTex,
-                lutTex = lutTex,
-                fx = Effects.from(params),
-                texelW = 1f / w,
-                texelH = 1f / h,
-                scale = scale,
-                aspect = w.toFloat() / h,
-                seed = seed,
-            )
+            // Render in horizontal strips: the whole photo is one texture (so blur and grain
+            // are seamless), but only a strip-sized framebuffer is needed, even at 50 MP.
+            val stripH = minOf(h, maxOf(256, 8_000_000 / w))
+            ensureFbo(w, stripH)
+            val scale = (max(w, h) / REFERENCE_SIDE).coerceIn(0.25f, 8f)
+            val fx = Effects.from(params)
             val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
-            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+            var y0 = 0
+            while (y0 < h) {
+                val rows = minOf(stripH, h - y0)
+                // Shift the full-size viewport so framebuffer row 0 is photo row y0.
+                GLES20.glViewport(0, -y0, w, h)
+                program!!.draw(
+                    srcTex = srcTex,
+                    lutTex = lutTex,
+                    fx = fx,
+                    texelW = 1f / w,
+                    texelH = 1f / h,
+                    scale = scale,
+                    aspect = w.toFloat() / h,
+                    seed = seed,
+                )
+                buf.position(y0 * w * 4)
+                GLES20.glReadPixels(0, 0, w, rows, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+                y0 += rows
+            }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             buf.position(0)
             val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -113,7 +124,7 @@ object GlProcessor {
 
         val maxSize = IntArray(1)
         GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, maxSize, 0)
-        maxTextureSize = maxSize[0].coerceIn(2048, 8192)
+        maxTextureSize = maxSize[0].coerceIn(2048, 16384)
 
         program = GlProgram(external = false)
         srcTex = GlUtil.newTexture(GLES20.GL_TEXTURE_2D)

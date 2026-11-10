@@ -164,14 +164,16 @@ void main() {
     c = texture(uLut, c * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize).rgb;
 
     if (uHalation > 0.001) {
-        vec2 r = tx * 10.0;
+        // Two rings of samples approximate the soft red glow film gets around bright lights.
         float glow = 0.0;
         for (int i = 0; i < 8; i++) {
             float a = float(i) * 0.785398;
-            glow += smoothstep(0.7, 1.0, luma(src(uv + vec2(cos(a), sin(a)) * r)));
+            vec2 d = vec2(cos(a), sin(a));
+            glow += smoothstep(0.72, 1.0, luma(src(uv + d * tx * 6.0))) * 0.6;
+            glow += smoothstep(0.72, 1.0, luma(src(uv + d.yx * vec2(1.0, -1.0) * tx * 16.0))) * 0.4;
         }
         glow /= 8.0;
-        c += vec3(1.0, 0.35, 0.15) * glow * uHalation * 0.45;
+        c = 1.0 - (1.0 - c) * (1.0 - vec3(1.0, 0.32, 0.12) * glow * uHalation * 0.7);
     }
 
     if (uLightLeak > 0.001) {
@@ -190,12 +192,22 @@ void main() {
     }
 
     if (uGrain > 0.001) {
-        vec2 gp = floor(uv / uTexel / max(uGrainSize * uScale, 1.0));
-        float g = hash(gp) + hash(gp + 17.0) - 1.0;
+        // Multi-scale grain: fine and coarse clumps, strongest in the mid-tones and shadows,
+        // with a little colour variation like real dye clouds.
+        float gs = max(uGrainSize * uScale, 1.0);
+        vec2 p1 = floor(uv / uTexel / gs);
+        vec2 p2 = floor(uv / uTexel / (gs * 2.3));
+        float fine = hash(p1) + hash(p1 + 17.0) - 1.0;
+        float coarse = hash(p2 + 31.0) + hash(p2 + 53.0) - 1.0;
+        float g = fine * 0.65 + coarse * 0.45;
+        vec3 chroma = vec3(hash(p1 + 7.0), hash(p1 + 11.0), hash(p1 + 13.0)) - 0.5;
         float l = luma(c);
-        float mask = 1.0 - pow(abs(l - 0.5) * 2.0, 2.0) * 0.7;
-        c += g * uGrain * 0.18 * mask;
+        float mask = smoothstep(0.0, 0.18, l) * (1.0 - smoothstep(0.55, 1.0, l) * 0.75);
+        c += (vec3(g) + chroma * 0.25) * uGrain * 0.2 * mask;
     }
+
+    // Dither before 8-bit output so smooth gradients never show steps.
+    c += (hash(gl_FragCoord.xy + 91.7) - 0.5) / 255.0;
 
     fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
@@ -366,15 +378,16 @@ object GlUtil {
     }
 
     /** Uploads a lookup table built by [LutBuilder] into a 3D texture. */
-    fun uploadLut(texId: Int, lut: ByteArray) {
+    fun uploadLut(texId: Int, lut: FloatArray) {
         val n = LutBuilder.N
-        val buf = ByteBuffer.allocateDirect(lut.size).order(ByteOrder.nativeOrder())
-        buf.put(lut); buf.position(0)
+        val buf = ByteBuffer.allocateDirect(lut.size * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        for (v in lut) buf.put(android.util.Half.toHalf(v))
+        buf.position(0)
         GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, texId)
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
         GLES30.glTexImage3D(
-            GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RGB8, n, n, n, 0,
-            GLES20.GL_RGB, GLES20.GL_UNSIGNED_BYTE, buf,
+            GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RGB16F, n, n, n, 0,
+            GLES20.GL_RGB, GLES30.GL_HALF_FLOAT, buf,
         )
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 4)
     }

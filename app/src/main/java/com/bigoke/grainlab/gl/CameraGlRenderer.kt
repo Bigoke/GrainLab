@@ -43,7 +43,7 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     private var frame = 0
 
     @Volatile private var effects = Effects()
-    @Volatile private var pendingLut: ByteArray? = null
+    @Volatile private var pendingLut: FloatArray? = null
     @Volatile var bufferWidth = 1440
     @Volatile var bufferHeight = 1080
 
@@ -54,7 +54,7 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     @Volatile var rotationDegrees = 90
     @Volatile var mirror = false
 
-    fun setLook(params: EditParams, lut: ByteArray) {
+    fun setLook(params: EditParams, lut: FloatArray) {
         // Heavy per-pixel filters are applied after capture, not live, to keep the viewfinder smooth.
         effects = Effects.from(params).copy(noiseReduction = 0f)
         pendingLut = lut
@@ -160,6 +160,6 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
             return floatArrayOf(left, top, cw, ch)
         }
 
-        val identityLut: ByteArray by lazy { LutBuilder.build(EditParams()) }
+        val identityLut: FloatArray by lazy { LutBuilder.build(EditParams()) }
     }
 }

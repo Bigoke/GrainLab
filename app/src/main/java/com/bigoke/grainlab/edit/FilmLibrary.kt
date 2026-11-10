@@ -286,6 +286,35 @@ object FilmLooks {
             effects = mapOf("grain" to .2f, "vignette" to .3f)),
     )
 
+    /** When true, brand-free names are shown (for publishing on the Play Store). */
+    @Volatile var safeNames = false
+
+    private val safePacks = mapOf(
+        KODAK to "Golden Box", FUJI to "Green Box", AGFA to "European", ILFORD to "Classic Mono",
+        POLAROID to "Instant", HB to "Medium Format",
+    )
+    fun packLabel(pack: String?): String =
+        if (pack == null) "All" else if (safeNames) safePacks[pack] ?: pack else pack
+
+    private val safe = mapOf(
+        "portrait160" to "Portrait 160", "portrait400" to "Portrait 400", "portra800" to "Portrait 800",
+        "ektar100" to "Vivid 100", "golden200" to "Golden 200", "everyday400" to "Everyday 400",
+        "colorplus200" to "Budget 200", "clear100" to "Clear Slide 100", "chrome64" to "Chrome 64",
+        "street800" to "Cine 500T", "tri400" to "Press 400", "tmax100" to "Fine Mono 100",
+        "tokyogreen" to "Green 400", "pro400h" to "Pastel 400", "c200" to "Cool 200", "velvet50" to "Velvet 50",
+        "vivid100" to "Pro Slide 100", "astia" to "Soft Slide 100", "classicchrome" to "Muted Chrome",
+        "classicneg" to "Nostalgic Neg", "eterna" to "Cinema Flat", "natura1600" to "Available Light 1600",
+        "miniinstant" to "Mini Instant", "acros100" to "Smooth Mono 100",
+        "vista200" to "Red Punch 200", "ultra100" to "Ultra Vivid 100", "optima200" to "Natural 200",
+        "precisa100" to "Cyan Slide 100", "apx100" to "Classic Mono 100", "scala200" to "Mono Slide 200",
+        "hp5" to "Grain Mono 400", "fine100" to "Silver 125", "delta3200" to "Night Mono 3200",
+        "pan50" to "Hard Mono 50", "xp2" to "Soft Mono 400", "infra" to "Infrared Mono",
+        "squareinstant" to "Square Instant", "sx70" to "Dream Instant", "spectra" to "Wide Instant",
+        "itypebw" to "Instant Mono", "fadedinstant" to "Faded Instant", "expired" to "Expired Instant",
+        "hbnatural" to "MF Natural", "hbportrait" to "MF Portrait", "hblandscape" to "MF Landscape", "hbmono" to "MF Mono",
+    )
+    fun safeName(id: String): String? = safe[id]
+
     private val byId = all.associateBy { it.id }
 
     fun byId(id: String?): FilmLook? = if (id == null) null else byId[id]

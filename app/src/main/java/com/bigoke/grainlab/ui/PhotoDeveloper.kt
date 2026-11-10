@@ -5,7 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.location.Location
+import com.bigoke.grainlab.data.EditHistory
+import com.bigoke.grainlab.data.Settings
 import com.bigoke.grainlab.edit.EditParams
+import com.bigoke.grainlab.io.ExifWriter
 import com.bigoke.grainlab.edit.Pipeline
 import com.bigoke.grainlab.io.BitmapLoader
 import com.bigoke.grainlab.io.ExportFormat
@@ -39,12 +43,20 @@ object PhotoDeveloper {
     private val _errors = MutableStateFlow(0)
     val errors: StateFlow<Int> = _errors.asStateFlow()
 
-    fun submit(context: Context, jpeg: ByteArray, rotation: Int, params: EditParams, mirror: Boolean, keepOriginal: Boolean) {
+    fun submit(
+        context: Context,
+        jpeg: ByteArray,
+        rotation: Int,
+        params: EditParams,
+        mirror: Boolean,
+        keepOriginal: Boolean,
+        location: Location? = null,
+    ) {
         val app = context.applicationContext
         _pending.value += 1
         scope.launch {
             lock.withLock {
-                val ok = runCatching { develop(app, jpeg, rotation, params, mirror, keepOriginal) }.getOrNull()
+                val ok = runCatching { develop(app, jpeg, rotation, params, mirror, keepOriginal, location) }.getOrNull()
                 if (ok != null) _last.value = ok else _errors.value += 1
             }
             _pending.value -= 1
@@ -58,11 +70,14 @@ object PhotoDeveloper {
         p: EditParams,
         mirror: Boolean,
         keepOriginal: Boolean,
+        location: Location?,
     ): Pair<Uri, Bitmap>? {
+        val exif = ExifWriter.fromJpeg(jpeg)
+        val keepLoc = Settings.keepLocation
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
         var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 4096) sample *= 2
+        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 8192) sample *= 2
         val decoded = BitmapFactory.decodeByteArray(
             jpeg, 0, jpeg.size,
             BitmapFactory.Options().apply {
@@ -79,13 +94,19 @@ object PhotoDeveloper {
             bmp = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, m, true)
             if (bmp !== decoded) decoded.recycle()
         }
-        bmp = BitmapLoader.scaleToMax(bmp, 4096)
+        bmp = BitmapLoader.scaleToMax(bmp, 8192)
 
         val ts = MediaSaver.timestamp()
-        if (keepOriginal) MediaSaver.saveBitmap(context, bmp, ExportFormat.JPEG, 95, "GrainLab_${ts}_original")
+        if (keepOriginal) {
+            MediaSaver.saveBitmap(context, bmp, ExportFormat.JPEG, 95, "GrainLab_${ts}_original")?.let {
+                ExifWriter.write(context, it, "image/jpeg", exif, keepLoc, location, bmp.width, bmp.height)
+            }
+        }
         val seed = abs(ts.hashCode() % 1000) / 1000f
         val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed)
         val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 94, "GrainLab_$ts") ?: return null
+        ExifWriter.write(context, uri, "image/jpeg", exif, keepLoc, location, out.width, out.height)
+        EditHistory.recordOutput(context, uri, null, p)
         val thumb = BitmapLoader.scaleToMax(out, 256).let { if (it === out) out.copy(Bitmap.Config.ARGB_8888, false) else it }
         if (out !== bmp) out.recycle()
         bmp.recycle()

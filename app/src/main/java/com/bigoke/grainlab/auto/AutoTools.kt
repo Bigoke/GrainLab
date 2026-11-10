@@ -29,7 +29,7 @@ object AutoTools {
     )
 
     /** Runs pixels through a lookup table (trilinear) and measures the result. */
-    private fun measure(px: IntArray, lut: ByteArray?): Stats {
+    private fun measure(px: IntArray, lut: FloatArray?): Stats {
         val n = LutBuilder.N
         val hist = IntArray(256)
         var sum = 0.0; var sum2 = 0.0; var satSum = 0.0; var hazeSum = 0.0
@@ -65,12 +65,12 @@ object AutoTools {
         )
     }
 
-    private fun sample(lut: ByteArray, n: Int, r: Float, g: Float, b: Float, out: FloatArray) {
+    private fun sample(lut: FloatArray, n: Int, r: Float, g: Float, b: Float, out: FloatArray) {
         val fr = r.coerceIn(0f, 1f) * (n - 1); val fg = g.coerceIn(0f, 1f) * (n - 1); val fb = b.coerceIn(0f, 1f) * (n - 1)
         val r0 = fr.toInt().coerceAtMost(n - 2); val g0 = fg.toInt().coerceAtMost(n - 2); val b0 = fb.toInt().coerceAtMost(n - 2)
         val dr = fr - r0; val dg = fg - g0; val db = fb - b0
         for (k in 0..2) {
-            fun v(ri: Int, gi: Int, bi: Int) = (lut[((bi * n + gi) * n + ri) * 3 + k].toInt() and 0xFF) / 255f
+            fun v(ri: Int, gi: Int, bi: Int) = lut[((bi * n + gi) * n + ri) * 3 + k]
             val c00 = v(r0, g0, b0) * (1 - dr) + v(r0 + 1, g0, b0) * dr
             val c10 = v(r0, g0 + 1, b0) * (1 - dr) + v(r0 + 1, g0 + 1, b0) * dr
             val c01 = v(r0, g0, b0 + 1) * (1 - dr) + v(r0 + 1, g0, b0 + 1) * dr

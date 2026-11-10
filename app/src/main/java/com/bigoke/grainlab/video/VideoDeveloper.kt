@@ -29,7 +29,7 @@ object VideoDeveloper {
     fun develop(
         context: Context,
         input: File,
-        lut: ByteArray?,
+        lut: FloatArray?,
         onProgress: (Int) -> Unit,
         onDone: (Uri?) -> Unit,
     ) {
