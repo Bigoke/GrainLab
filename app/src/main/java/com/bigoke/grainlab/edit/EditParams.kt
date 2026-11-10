@@ -5,6 +5,7 @@ import org.json.JSONObject
 enum class Group(val label: String) {
     LIGHT("Light"),
     COLOUR("Colour"),
+    PRESENCE("Presence"),
     GRADING("Grading"),
     DETAIL("Detail"),
     EFFECTS("Effects"),
@@ -45,8 +46,11 @@ object Adjustments {
         Adjust("highlightSat", "Highlight tint", Group.GRADING, 0f, 1f),
         Adjust("gradeBalance", "Balance", Group.GRADING, -1f, 1f),
 
+        Adjust("texture", "Texture", Group.PRESENCE, -1f, 1f),
+        Adjust("clarity", "Clarity", Group.PRESENCE, -1f, 1f),
+        Adjust("dehaze", "Dehaze", Group.PRESENCE, -1f, 1f),
+
         Adjust("sharpen", "Sharpening", Group.DETAIL, 0f, 1f),
-        Adjust("clarity", "Clarity", Group.DETAIL, -1f, 1f),
         Adjust("noiseReduction", "Noise reduction", Group.DETAIL, 0f, 1f),
 
         Adjust("grain", "Grain", Group.EFFECTS, 0f, 1f),

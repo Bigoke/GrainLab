@@ -19,6 +19,17 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     /** Called on the main thread each time a new camera SurfaceTexture is ready. */
     var onSurfaceReady: ((SurfaceTexture) -> Unit)? = null
 
+    /** Called on the main thread when the on-screen picture shape changes. */
+    var onAspectChanged: ((Float) -> Unit)? = null
+
+    /**
+     * Whether the camera's own SurfaceTexture transform already rotates (and for the front camera,
+     * mirrors) the frame upright. Detected from the matrix on every frame; when it does, no extra
+     * rotation or mirroring is applied here.
+     */
+    @Volatile private var matrixRotates = false
+    private var aspectKnown = false
+
     @Volatile var surfaceTexture: SurfaceTexture? = null
         private set
 
@@ -35,19 +46,21 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     @Volatile private var pendingLut: ByteArray? = null
     @Volatile var bufferWidth = 1440
     @Volatile var bufferHeight = 1080
+
+    fun resetAspect() { aspectKnown = false }
     @Volatile var rotationDegrees = 90
     @Volatile var mirror = false
 
     fun setLook(params: EditParams, lut: ByteArray) {
         // Heavy per-pixel filters are applied after capture, not live, to keep the viewfinder smooth.
-        effects = Effects.from(params).copy(noiseReduction = 0f, clarity = params["clarity"] * 0.5f)
+        effects = Effects.from(params).copy(noiseReduction = 0f)
         pendingLut = lut
         view.requestRender()
     }
 
     /** Width / height of the picture as seen on screen (after rotation). */
     fun contentAspect(): Float {
-        val rotated = rotationDegrees % 180 != 0
+        val rotated = matrixRotates || rotationDegrees % 180 != 0
         val w = if (rotated) bufferHeight else bufferWidth
         val h = if (rotated) bufferWidth else bufferHeight
         return w.toFloat() / h.toFloat()
@@ -83,6 +96,14 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
             return
         }
         st.getTransformMatrix(texMatrix)
+        // A 90/270-degree rotation inside the matrix shows up as a near-zero first element.
+        val rotates = kotlin.math.abs(texMatrix[0]) < 0.5f
+        if (rotates != matrixRotates || !aspectKnown) {
+            matrixRotates = rotates
+            aspectKnown = true
+            val a = contentAspect()
+            main.post { onAspectChanged?.invoke(a) }
+        }
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
@@ -92,8 +113,9 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
         var sy = 1f
         if (viewAspect > content) sx = content / viewAspect else sy = viewAspect / content
         // The quad is rotated first; swap the scale axes so the scaling applies on screen.
-        val rotated = rotationDegrees % 180 != 0
-        val posX = if (mirror) -sx else sx
+        val extraRotation = if (matrixRotates) 0 else rotationDegrees
+        val rotated = matrixRotates || rotationDegrees % 180 != 0
+        val posX = if (mirror && !matrixRotates) -sx else sx
         frame++
         program?.draw(
             srcTex = oesTex,
@@ -107,7 +129,7 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
             texMatrix = texMatrix,
             posScaleX = posX,
             posScaleY = sy,
-            rotation = Math.toRadians(rotationDegrees.toDouble()).toFloat(),
+            rotation = Math.toRadians(extraRotation.toDouble()).toFloat(),
         )
     }
 

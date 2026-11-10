@@ -18,6 +18,7 @@ import androidx.camera.core.DisplayOrientedMeteringPointFactory
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
@@ -39,6 +40,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -165,6 +168,8 @@ sealed class Look(val title: String) {
 
 private enum class Mode { PHOTO, VIDEO }
 
+private const val MINE = "My templates"
+
 private class CamHolder {
     var provider: ProcessCameraProvider? = null
     var camera: Camera? = null
@@ -269,12 +274,33 @@ private fun CameraView(
     var quality by remember { mutableIntStateOf(1) }
     var menuOpen by remember { mutableStateOf(false) }
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    var flashOverlay by remember { mutableStateOf(false) }
+    var packFilter by remember { mutableStateOf<String?>(null) }
+    val pendingShots by PhotoDeveloper.pending.collectAsState()
+    val lastShot by PhotoDeveloper.last.collectAsState()
+    LaunchedEffect(lastShot) { lastShot?.let { lastUri = it.first; lastThumb = it.second } }
+    val shotErrors by PhotoDeveloper.errors.collectAsState()
+    LaunchedEffect(shotErrors) { if (shotErrors > 0) context.toast("A photo could not be saved") }
+
+    // Video timer keeps ticking every second while recording and not paused.
+    LaunchedEffect(recording, paused) {
+        if (recording != null && !paused) {
+            while (true) {
+                delay(1000)
+                recordSeconds += 1
+            }
+        }
+    }
 
     val effective = remember(look.key, strength) { look.params().scaled(strength) }
 
     DisposableEffect(renderer) {
         renderer.onSurfaceReady = { surfaceGen++ }
-        onDispose { renderer.onSurfaceReady = null }
+        renderer.onAspectChanged = { contentAspect = it }
+        onDispose {
+            renderer.onSurfaceReady = null
+            renderer.onAspectChanged = null
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -319,6 +345,7 @@ private fun CameraView(
             st.setDefaultBufferSize(res.width, res.height)
             renderer.bufferWidth = res.width
             renderer.bufferHeight = res.height
+            renderer.resetAspect()
             val surface = Surface(st)
             request.provideSurface(surface, mainExecutor) { surface.release() }
             glView.post { contentAspect = renderer.contentAspect() }
@@ -367,47 +394,42 @@ private fun CameraView(
     }
 
     fun takePhoto() {
-        if (busy) return
+        if (countdown > 0) return
         scope.launch {
             if (timer > 0) {
                 for (i in timer downTo 1) { countdown = i; delay(1000) }
                 countdown = 0
             }
             val ic = cam.imageCapture ?: return@launch
-            val file = File(context.cacheDir, "cap_${System.currentTimeMillis()}.jpg")
-            busy = true
-            val ok = suspendCancellableCoroutine<Boolean> { cont ->
+            flashOverlay = true
+            val shot = suspendCancellableCoroutine<Pair<ByteArray, Int>?> { cont ->
                 ic.takePicture(
-                    ImageCapture.OutputFileOptions.Builder(file).build(),
                     mainExecutor,
-                    object : ImageCapture.OnImageSavedCallback {
-                        override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                            if (cont.isActive) cont.resume(true)
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(image: ImageProxy) {
+                            val result = runCatching {
+                                val buf = image.planes[0].buffer
+                                buf.rewind()
+                                val bytes = ByteArray(buf.remaining())
+                                buf.get(bytes)
+                                bytes to image.imageInfo.rotationDegrees
+                            }.getOrNull()
+                            image.close()
+                            if (cont.isActive) cont.resume(result)
                         }
 
                         override fun onError(exception: ImageCaptureException) {
-                            if (cont.isActive) cont.resume(false)
+                            if (cont.isActive) cont.resume(null)
                         }
                     },
                 )
             }
-            if (!ok) {
-                busy = false
+            flashOverlay = false
+            if (shot == null) {
                 context.toast("Capture failed")
                 return@launch
             }
-            val p = effective
-            val front = !lensBack
-            val keep = saveOriginal
-            val result = withContext(Dispatchers.IO) {
-                runCatching { developPhoto(context, file, p, front, keep) }.getOrNull()
-            }
-            file.delete()
-            busy = false
-            if (result != null) {
-                lastUri = result.first
-                lastThumb = result.second
-            } else context.toast("Could not save the photo")
+            PhotoDeveloper.submit(context, shot.first, shot.second, effective, mirror = !lensBack, keepOriginal = saveOriginal)
         }
     }
 
@@ -517,14 +539,6 @@ private fun CameraView(
                     color = Color.White,
                 )
             }
-            // Recording timer sits just above the picture's bottom edge.
-            if (recording != null) {
-                val y = with(density) { (top + ch).toDp() - 48.dp }
-                Pill(
-                    (if (paused) "Paused  " else "● ") + String.format(Locale.US, "%02d:%02d", recordSeconds / 60, recordSeconds % 60),
-                    Modifier.align(Alignment.TopCenter).offset(y = y),
-                )
-            }
         }
 
         // ---- Top bar ----
@@ -596,6 +610,29 @@ private fun CameraView(
             }
         }
 
+        if (flashOverlay) Box(Modifier.fillMaxSize().background(Color(0x99FFFFFF)))
+
+        // Recording timer, always visible under the top bar while recording.
+        if (recording != null) {
+            Row(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 60.dp)
+                    .background(if (paused) Color(0xCC444444) else Color(0xDDD32F2F), RoundedCornerShape(50))
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (!paused) Box(Modifier.size(10.dp).background(Color.White, CircleShape))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    (if (paused) "PAUSED  " else "") +
+                        String.format(Locale.US, "%02d:%02d", recordSeconds / 60, recordSeconds % 60),
+                    color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
         // ---- Bottom controls ----
         Column(
             Modifier
@@ -638,7 +675,26 @@ private fun CameraView(
                     Text("${(strength * 100).toInt()}%", color = Color.White, fontSize = 12.sp)
                 }
             }
-            LookStrip(templates, look) { look = it; strength = 1f }
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                val filters = listOf<String?>(null, MINE) + FilmLooks.packs
+                filters.forEach { f ->
+                    val sel = packFilter == f
+                    Text(
+                        f ?: "All",
+                        color = if (sel) Color(0xFF2B1A00) else Color.White,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (sel) Amber else Color(0x66000000))
+                            .clickable { packFilter = f }
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            LookStrip(templates, look, packFilter) { look = it; strength = 1f }
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.Center,
@@ -678,25 +734,35 @@ private fun CameraView(
                     } else {
                         Icon(Icons.Filled.PhotoLibrary, contentDescription = "Gallery", tint = Color.White)
                     }
+                    if (pendingShots > 0) {
+                        CircularProgressIndicator(color = Amber, strokeWidth = 3.dp, modifier = Modifier.size(28.dp))
+                    }
                 }
 
                 ShutterButton(
                     mode = mode,
                     recording = recording != null,
-                    enabled = !busy && developing == null,
+                    enabled = developing == null && countdown == 0,
                     onClick = { if (mode == Mode.PHOTO) takePhoto() else toggleRecording() },
                 )
 
                 if (recording != null) {
-                    IconButton(
-                        onClick = {
-                            val r = recording ?: return@IconButton
-                            if (paused) r.resume() else r.pause()
-                            paused = !paused
-                        },
-                        modifier = Modifier.size(52.dp),
-                    ) {
-                        Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, contentDescription = "Pause", tint = Color.White)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF2A2724))
+                                .clickable {
+                                    val r = recording ?: return@clickable
+                                    if (paused) r.resume() else r.pause()
+                                    paused = !paused
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause, contentDescription = "Pause", tint = Color.White)
+                        }
+                        Text(if (paused) "Resume" else "Pause", color = Color.White, fontSize = 11.sp)
                     }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -748,12 +814,12 @@ private fun ShutterButton(mode: Mode, recording: Boolean, enabled: Boolean, onCl
 }
 
 @Composable
-private fun LookStrip(templates: List<Template>, selected: Look, onSelect: (Look) -> Unit) {
-    val looks = remember(templates) {
+private fun LookStrip(templates: List<Template>, selected: Look, packFilter: String?, onSelect: (Look) -> Unit) {
+    val looks = remember(templates, packFilter) {
         buildList<Look> {
             add(Look.None)
-            templates.forEach { add(Look.Tmpl(it)) }
-            FilmLooks.all.forEach { add(Look.Film(it)) }
+            if (packFilter == null || packFilter == MINE) templates.forEach { add(Look.Tmpl(it)) }
+            if (packFilter != MINE) FilmLooks.all.filter { packFilter == null || it.pack == packFilter }.forEach { add(Look.Film(it)) }
         }
     }
     LazyRow(
@@ -795,25 +861,3 @@ private suspend fun awaitProvider(context: Context): ProcessCameraProvider =
             if (cont.isActive) cont.resume(future.get())
         }, ContextCompat.getMainExecutor(context))
     }
-
-/** Loads the captured JPEG, applies the look at full size and saves it. */
-private suspend fun developPhoto(
-    context: Context,
-    file: File,
-    p: EditParams,
-    front: Boolean,
-    keepOriginal: Boolean,
-): Pair<Uri, Bitmap>? {
-    var bmp = BitmapLoader.load(context, Uri.fromFile(file), 4096) ?: return null
-    if (front) {
-        val m = Geometry.mirror(bmp)
-        if (m !== bmp) bmp.recycle()
-        bmp = m
-    }
-    val ts = MediaSaver.timestamp()
-    if (keepOriginal) MediaSaver.saveBitmap(context, bmp, ExportFormat.JPEG, 95, "GrainLab_${ts}_original")
-    val seed = abs(ts.hashCode() % 1000) / 1000f
-    val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed)
-    val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 95, "GrainLab_$ts") ?: return null
-    return uri to BitmapLoader.scaleToMax(out, 256)
-}

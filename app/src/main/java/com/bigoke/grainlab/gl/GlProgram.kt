@@ -15,6 +15,8 @@ import java.nio.FloatBuffer
 data class Effects(
     val sharpen: Float = 0f,
     val clarity: Float = 0f,
+    val texture: Float = 0f,
+    val dehaze: Float = 0f,
     val noiseReduction: Float = 0f,
     val grain: Float = 0f,
     val grainSize: Float = 1.5f,
@@ -24,7 +26,8 @@ data class Effects(
 ) {
     companion object {
         fun from(p: EditParams) = Effects(
-            sharpen = p["sharpen"], clarity = p["clarity"], noiseReduction = p["noiseReduction"],
+            sharpen = p["sharpen"], clarity = p["clarity"], texture = p["texture"], dehaze = p["dehaze"],
+            noiseReduction = p["noiseReduction"],
             grain = p["grain"], grainSize = p["grainSize"], vignette = p["vignette"],
             halation = p["halation"], lightLeak = p["lightLeak"],
         )
@@ -64,6 +67,8 @@ uniform float uScale;
 uniform float uLutSize;
 uniform float uSharpen;
 uniform float uClarity;
+uniform float uTexture;
+uniform float uDehaze;
 uniform float uNR;
 uniform float uGrain;
 uniform float uGrainSize;
@@ -105,6 +110,18 @@ void main() {
         c = mix(c, sum / ws, clamp(uNR * 1.4, 0.0, 1.0));
     }
 
+    if (abs(uTexture) > 0.001) {
+        vec2 r = tx * 3.0;
+        vec3 b = (src(uv + vec2(r.x, 0.0)) + src(uv - vec2(r.x, 0.0)) +
+                  src(uv + vec2(0.0, r.y)) + src(uv - vec2(0.0, r.y)) +
+                  src(uv + r * 0.7) + src(uv - r * 0.7) +
+                  src(uv + vec2(r.x, -r.y) * 0.7) + src(uv + vec2(-r.x, r.y) * 0.7)) / 8.0;
+        vec3 d = c - b;
+        float fine = 1.0 - smoothstep(0.06, 0.22, length(d));
+        if (uTexture > 0.0) c += d * uTexture * 1.6 * fine;
+        else c = mix(c, b, -uTexture * 0.85 * fine);
+    }
+
     if (uSharpen > 0.001) {
         vec3 b = (src(uv + vec2(tx.x, 0.0)) + src(uv - vec2(tx.x, 0.0)) +
                   src(uv + vec2(0.0, tx.y)) + src(uv - vec2(0.0, tx.y))) * 0.25;
@@ -123,6 +140,23 @@ void main() {
         float l = luma(c);
         float mid = 1.0 - pow(abs(l - 0.5) * 2.0, 2.0);
         c += (l - luma(b)) * uClarity * 0.8 * mid;
+    }
+
+    if (abs(uDehaze) > 0.001) {
+        if (uDehaze > 0.0) {
+            vec2 r = tx * 14.0;
+            float dc = min(min(c.r, c.g), c.b);
+            for (int i = 0; i < 8; i++) {
+                float a = float(i) * 0.785398;
+                vec3 s = src(uv + vec2(cos(a), sin(a)) * r);
+                dc = min(dc, min(min(s.r, s.g), s.b));
+            }
+            float A = 0.95;
+            float t = max(1.0 - uDehaze * 0.9 * dc / A, 0.3);
+            c = (c - A * (1.0 - t)) / t;
+        } else {
+            c = mix(c, vec3(0.82), -uDehaze * 0.35);
+        }
     }
 
     c = clamp(c, 0.0, 1.0);
@@ -179,6 +213,8 @@ class GlProgram(private val external: Boolean) {
     private val uLutSize: Int
     private val uSharpen: Int
     private val uClarity: Int
+    private val uTextureAmt: Int
+    private val uDehaze: Int
     private val uNR: Int
     private val uGrain: Int
     private val uGrainSize: Int
@@ -203,6 +239,8 @@ class GlProgram(private val external: Boolean) {
         uLutSize = GLES20.glGetUniformLocation(id, "uLutSize")
         uSharpen = GLES20.glGetUniformLocation(id, "uSharpen")
         uClarity = GLES20.glGetUniformLocation(id, "uClarity")
+        uTextureAmt = GLES20.glGetUniformLocation(id, "uTexture")
+        uDehaze = GLES20.glGetUniformLocation(id, "uDehaze")
         uNR = GLES20.glGetUniformLocation(id, "uNR")
         uGrain = GLES20.glGetUniformLocation(id, "uGrain")
         uGrainSize = GLES20.glGetUniformLocation(id, "uGrainSize")
@@ -243,6 +281,8 @@ class GlProgram(private val external: Boolean) {
         GLES20.glUniform1f(uLutSize, LutBuilder.N.toFloat())
         GLES20.glUniform1f(uSharpen, fx.sharpen)
         GLES20.glUniform1f(uClarity, fx.clarity)
+        GLES20.glUniform1f(uTextureAmt, fx.texture)
+        GLES20.glUniform1f(uDehaze, fx.dehaze)
         GLES20.glUniform1f(uNR, fx.noiseReduction)
         GLES20.glUniform1f(uGrain, fx.grain)
         GLES20.glUniform1f(uGrainSize, fx.grainSize)

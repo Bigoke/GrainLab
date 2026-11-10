@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.RestartAlt
@@ -75,6 +78,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -107,7 +113,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private enum class Tool(val label: String) {
-    AUTO("Auto"), FILM("Film"), LIGHT("Light"), COLOUR("Colour"), HSL("HSL"),
+    AUTO("Auto"), FILM("Film"), LIGHT("Light"), COLOUR("Colour"), PRESENCE("Presence"), HSL("HSL"),
     GRADING("Grading"), DETAIL("Detail"), EFFECTS("Effects"), CROP("Crop")
 }
 
@@ -129,6 +135,9 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
 
     var rendered by remember { mutableStateOf<Bitmap?>(null) }
     var showOriginal by remember { mutableStateOf(false) }
+    var splitMode by remember { mutableStateOf(false) }
+    var split by remember { mutableFloatStateOf(0.5f) }
+    var beforeImg by remember { mutableStateOf<Bitmap?>(null) }
     var tool by remember { mutableStateOf(Tool.FILM) }
     var busy by remember { mutableStateOf<String?>(null) }
     var showSaveTemplate by remember { mutableStateOf(false) }
@@ -182,6 +191,15 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
         }
     }
 
+    // "Before" for the split view: same crop and border as the edit, but no colour or effects.
+    val beforeKey = params.geometryOnly().values.toString() + params["border"] + params["dateStamp"]
+    LaunchedEffect(previewBase, splitMode, beforeKey) {
+        val pb = previewBase ?: return@LaunchedEffect
+        if (!splitMode) return@LaunchedEffect
+        val bp = params.geometryOnly().withAll(mapOf("border" to params["border"], "dateStamp" to params["dateStamp"]))
+        beforeImg = runCatching { Pipeline.render(pb, bp, useCache = false) }.getOrNull()
+    }
+
     Column(Modifier.fillMaxSize().background(Ink).statusBarsPadding().navigationBarsPadding()) {
         // ---- Top bar ----
         Row(
@@ -196,6 +214,9 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
             IconButton(onClick = { redo() }, enabled = redoStack.isNotEmpty()) {
                 Icon(Icons.AutoMirrored.Filled.Redo, "Redo", tint = if (redoStack.isNotEmpty()) Color.White else Color.DarkGray)
             }
+            IconButton(onClick = { splitMode = !splitMode }) {
+                Icon(Icons.Filled.Compare, "Before and after", tint = if (splitMode) Amber else Color.White)
+            }
             IconButton(onClick = { showSaveTemplate = true }) {
                 Icon(Icons.Filled.BookmarkAdd, "Save as template", tint = Color.White)
             }
@@ -209,8 +230,8 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectTapGestures(onPress = {
+                .pointerInput(splitMode) {
+                    if (!splitMode) detectTapGestures(onPress = {
                         showOriginal = true
                         tryAwaitRelease()
                         showOriginal = false
@@ -219,9 +240,11 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) {
             val shown = if (showOriginal) previewBase else (rendered ?: previewBase)
+            val before = beforeImg
             when {
                 loadFailed -> Text("Could not open this photo.", color = Muted)
                 shown == null -> CircularProgressIndicator(color = Amber)
+                splitMode && before != null -> SplitCompare(before, shown, split) { split = it }
                 else -> Image(
                     shown.asImageBitmap(),
                     contentDescription = "Photo",
@@ -230,7 +253,7 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
                 )
             }
             if (showOriginal) Pill("Original", Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
-            else if (shown != null) Text(
+            else if (shown != null && !splitMode) Text(
                 "Hold to compare",
                 color = Color(0x88FFFFFF), fontSize = 11.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
@@ -315,6 +338,12 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
                 )
                 Tool.LIGHT -> SliderPanel(Group.LIGHT, params, { params = it }, { commit(params) })
                 Tool.COLOUR -> SliderPanel(Group.COLOUR, params, { params = it }, { commit(params) })
+                Tool.PRESENCE -> SliderPanel(Group.PRESENCE, params, { params = it }, { commit(params) }) {
+                    Text(
+                        "Texture brings out fine detail, Clarity adds mid-tone punch, Dehaze cuts through haze and fog.",
+                        color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
                 Tool.GRADING -> SliderPanel(Group.GRADING, params, { params = it }, { commit(params) })
                 Tool.DETAIL -> SliderPanel(Group.DETAIL, params, { params = it }, { commit(params) }) {
                     OutlinedButton(
@@ -700,4 +729,50 @@ private fun ExportDialog(onDismiss: () -> Unit, onExport: (ExportFormat, Int, In
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+
+/** Before/after view: drag anywhere on the photo to move the divider. */
+@Composable
+private fun SplitCompare(before: Bitmap, after: Bitmap, split: Float, onSplit: (Float) -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .padding(8.dp)
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { onSplit((it.x / size.width).coerceIn(0f, 1f)) },
+                ) { change, _ ->
+                    change.consume()
+                    onSplit((change.position.x / size.width).coerceIn(0f, 1f))
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures { onSplit((it.x / size.width).coerceIn(0f, 1f)) }
+            },
+    ) {
+        Image(after.asImageBitmap(), "After", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        Image(
+            before.asImageBitmap(), "Before", contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().drawWithContent {
+                clipRect(left = 0f, top = 0f, right = size.width * split, bottom = size.height) {
+                    this@drawWithContent.drawContent()
+                }
+            },
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val x = size.width * split
+            drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 3f)
+            drawCircle(Color.White, radius = 18.dp.toPx(), center = Offset(x, size.height / 2f))
+            drawCircle(Amber, radius = 15.dp.toPx(), center = Offset(x, size.height / 2f))
+            val y = size.height / 2f
+            val a = 6.dp.toPx()
+            drawLine(Color.Black, Offset(x - a, y), Offset(x - a * 0.2f, y - a * 0.7f), strokeWidth = 4f)
+            drawLine(Color.Black, Offset(x - a, y), Offset(x - a * 0.2f, y + a * 0.7f), strokeWidth = 4f)
+            drawLine(Color.Black, Offset(x + a, y), Offset(x + a * 0.2f, y - a * 0.7f), strokeWidth = 4f)
+            drawLine(Color.Black, Offset(x + a, y), Offset(x + a * 0.2f, y + a * 0.7f), strokeWidth = 4f)
+        }
+        Pill("Before", Modifier.align(Alignment.TopStart).padding(8.dp))
+        Pill("After", Modifier.align(Alignment.TopEnd).padding(8.dp))
+    }
 }
