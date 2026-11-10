@@ -1,0 +1,85 @@
+package com.bigoke.grainlab
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.bigoke.grainlab.data.TemplateStore
+import com.bigoke.grainlab.ui.BatchScreen
+import com.bigoke.grainlab.ui.CameraScreen
+import com.bigoke.grainlab.ui.EditorScreen
+import com.bigoke.grainlab.ui.GrainLabTheme
+import com.bigoke.grainlab.ui.Ink
+import com.bigoke.grainlab.ui.TemplatesScreen
+
+sealed interface Screen {
+    data object Camera : Screen
+    data class Editor(val uri: Uri) : Screen
+    data object Templates : Screen
+    data object Batch : Screen
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        TemplateStore.init(this)
+        enableEdgeToEdge()
+        val shared = sharedImage(intent)
+        setContent {
+            GrainLabTheme {
+                App(shared)
+            }
+        }
+    }
+
+    private fun sharedImage(intent: Intent?): Uri? {
+        intent ?: return null
+        return when (intent.action) {
+            Intent.ACTION_SEND -> if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            Intent.ACTION_EDIT -> intent.data
+            else -> null
+        }
+    }
+}
+
+@Composable
+fun App(shared: Uri?) {
+    var stack by remember {
+        mutableStateOf(if (shared != null) listOf<Screen>(Screen.Camera, Screen.Editor(shared)) else listOf<Screen>(Screen.Camera))
+    }
+    fun push(s: Screen) { stack = stack + s }
+    fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
+
+    BackHandler(enabled = stack.size > 1) { pop() }
+
+    Box(Modifier.fillMaxSize().background(Ink)) {
+        when (val s = stack.last()) {
+            Screen.Camera -> CameraScreen(
+                onOpenEditor = { push(Screen.Editor(it)) },
+                onOpenTemplates = { push(Screen.Templates) },
+                onOpenBatch = { push(Screen.Batch) },
+            )
+            is Screen.Editor -> EditorScreen(uri = s.uri, onBack = { pop() })
+            Screen.Templates -> TemplatesScreen(onBack = { pop() })
+            Screen.Batch -> BatchScreen(onBack = { pop() })
+        }
+    }
+}

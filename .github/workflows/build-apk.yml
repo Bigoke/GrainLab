@@ -1,0 +1,64 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+
+      # On failure, push the compiler errors to the ci-logs branch so they can be read and fixed.
+      - name: Save build log on failure
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "^e: |error:|What went wrong|Execution failed|Could not|FAILED" -A4 build.log | head -500 > /tmp/errors.txt || true
+          tail -250 build.log > /tmp/tail.txt || true
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout --orphan ci-logs-tmp
+          git rm -rf --cached . > /dev/null
+          cp /tmp/errors.txt /tmp/tail.txt .
+          git add -f errors.txt tail.txt
+          git commit -m "Build log for run $GITHUB_RUN_ID"
+          git push -f origin HEAD:ci-logs
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk GrainLab.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GrainLab-debug-apk
+          path: GrainLab.apk
+          if-no-files-found: error
+
+      # Fixed download link: https://github.com/Bigoke/GrainLab/releases/latest/download/GrainLab.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build
+          name: GrainLab latest build
+          body: Debug APK built from the latest commit on main.
+          files: GrainLab.apk
+          make_latest: true
