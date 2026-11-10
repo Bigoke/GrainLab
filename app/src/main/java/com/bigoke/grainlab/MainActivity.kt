@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         TemplateStore.init(this)
+        com.bigoke.grainlab.data.Settings.init(this)
         enableEdgeToEdge()
         val shared = sharedImage(intent)
         setContent {

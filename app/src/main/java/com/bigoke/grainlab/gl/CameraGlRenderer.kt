@@ -48,6 +48,9 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     @Volatile var bufferHeight = 1080
 
     fun resetAspect() { aspectKnown = false }
+
+    /** Space reserved at the top of the screen for the top bar, in pixels. */
+    @Volatile var topInsetPx = 0f
     @Volatile var rotationDegrees = 90
     @Volatile var mirror = false
 
@@ -108,10 +111,10 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
         val content = contentAspect()
-        val viewAspect = viewW.toFloat() / viewH
-        var sx = 1f
-        var sy = 1f
-        if (viewAspect > content) sx = content / viewAspect else sy = viewAspect / content
+        val rect = contentRect(viewW.toFloat(), viewH.toFloat(), content, topInsetPx)
+        val sx = rect[2] / viewW
+        val sy = rect[3] / viewH
+        val offY = 1f - 2f * (rect[1] + rect[3] / 2f) / viewH
         // The quad is rotated first; swap the scale axes so the scaling applies on screen.
         val extraRotation = if (matrixRotates) 0 else rotationDegrees
         val rotated = matrixRotates || rotationDegrees % 180 != 0
@@ -130,6 +133,7 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
             posScaleX = posX,
             posScaleY = sy,
             rotation = Math.toRadians(extraRotation.toDouble()).toFloat(),
+            posOffsetY = offY,
         )
     }
 
@@ -143,6 +147,19 @@ class CameraGlRenderer(private val view: GLSurfaceView) : GLSurfaceView.Renderer
     }
 
     companion object {
+        /**
+         * Where the picture sits in the view: left, top, width, height in pixels. It is placed just
+         * under the top bar when there is room, leaving the bottom free for controls.
+         */
+        fun contentRect(vw: Float, vh: Float, aspect: Float, topInset: Float): FloatArray {
+            val cw = if (vw / vh > aspect) vh * aspect else vw
+            val ch = if (vw / vh > aspect) vh else vw / aspect
+            val left = (vw - cw) / 2f
+            val centred = (vh - ch) / 2f
+            val top = if (topInset < centred) topInset else centred
+            return floatArrayOf(left, top, cw, ch)
+        }
+
         val identityLut: ByteArray by lazy { LutBuilder.build(EditParams()) }
     }
 }

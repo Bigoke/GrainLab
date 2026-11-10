@@ -6,17 +6,16 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,7 +32,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -48,19 +46,15 @@ import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -80,19 +74,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bigoke.grainlab.auto.AutoTools
+import com.bigoke.grainlab.data.Settings
 import com.bigoke.grainlab.data.Template
 import com.bigoke.grainlab.data.TemplateStore
+import com.bigoke.grainlab.edit.Adjust
 import com.bigoke.grainlab.edit.Adjustments
 import com.bigoke.grainlab.edit.EditParams
 import com.bigoke.grainlab.edit.FilmLook
@@ -105,6 +105,8 @@ import com.bigoke.grainlab.io.BitmapLoader
 import com.bigoke.grainlab.io.ExportFormat
 import com.bigoke.grainlab.io.MediaSaver
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -138,7 +140,13 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
     var splitMode by remember { mutableStateOf(false) }
     var split by remember { mutableFloatStateOf(0.5f) }
     var beforeImg by remember { mutableStateOf<Bitmap?>(null) }
-    var tool by remember { mutableStateOf(Tool.FILM) }
+    var fullScreen by remember { mutableStateOf(false) }
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+
+    var tool by remember { mutableStateOf(Tool.entries[Settings.editorTool.coerceIn(0, Tool.entries.size - 1)]) }
+    LaunchedEffect(tool) { Settings.editorTool = tool.ordinal }
     var busy by remember { mutableStateOf<String?>(null) }
     var showSaveTemplate by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
@@ -176,11 +184,17 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
         }
     }
 
+    fun clampPan(p: Offset, z: Float): Offset {
+        val maxX = (z - 1f) * boxSize.width / 2f
+        val maxY = (z - 1f) * boxSize.height / 2f
+        return Offset(p.x.coerceIn(-maxX, maxX), p.y.coerceIn(-maxY, maxY))
+    }
+
     LaunchedEffect(uri) {
         val w = withContext(Dispatchers.IO) { runCatching { BitmapLoader.load(context, uri, 4096) }.getOrNull() }
         if (w == null) { loadFailed = true; return@LaunchedEffect }
         working = w
-        previewBase = withContext(Dispatchers.Default) { BitmapLoader.scaleToMax(w, 1440) }
+        previewBase = withContext(Dispatchers.Default) { BitmapLoader.scaleToMax(w, 2048) }
         thumbBase = withContext(Dispatchers.Default) { BitmapLoader.scaleToMax(w, 180) }
     }
 
@@ -200,64 +214,85 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
         beforeImg = runCatching { Pipeline.render(pb, bp, useCache = false) }.getOrNull()
     }
 
-    Column(Modifier.fillMaxSize().background(Ink).statusBarsPadding().navigationBarsPadding()) {
-        // ---- Top bar ----
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
-            Text("Edit", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            IconButton(onClick = { undo() }, enabled = undoStack.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Filled.Undo, "Undo", tint = if (undoStack.isNotEmpty()) Color.White else Color.DarkGray)
-            }
-            IconButton(onClick = { redo() }, enabled = redoStack.isNotEmpty()) {
-                Icon(Icons.AutoMirrored.Filled.Redo, "Redo", tint = if (redoStack.isNotEmpty()) Color.White else Color.DarkGray)
-            }
-            IconButton(onClick = { splitMode = !splitMode }) {
-                Icon(Icons.Filled.Compare, "Before and after", tint = if (splitMode) Amber else Color.White)
-            }
-            IconButton(onClick = { showSaveTemplate = true }) {
-                Icon(Icons.Filled.BookmarkAdd, "Save as template", tint = Color.White)
-            }
-            Button(onClick = { showExport = true }, enabled = working != null, modifier = Modifier.padding(end = 8.dp)) {
-                Text("Export")
+    Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding()) {
+        // ---- Top bar (hidden in full screen) ----
+        if (!fullScreen) {
+            Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { undo() }, enabled = undoStack.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, "Undo", tint = if (undoStack.isNotEmpty()) Color.White else Color.DarkGray)
+                }
+                IconButton(onClick = { redo() }, enabled = redoStack.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Filled.Redo, "Redo", tint = if (redoStack.isNotEmpty()) Color.White else Color.DarkGray)
+                }
+                IconButton(onClick = { splitMode = !splitMode }) {
+                    Icon(Icons.Filled.Compare, "Before and after", tint = if (splitMode) Amber else Color.White)
+                }
+                IconButton(onClick = { showSaveTemplate = true }) {
+                    Icon(Icons.Filled.BookmarkAdd, "Save as template", tint = Color.White)
+                }
+                TextButton(onClick = { showExport = true }, enabled = working != null) {
+                    Text("Export", color = Amber, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
-        // ---- Image ----
+        // ---- Photo: tap for full screen, hold to see the original, pinch or double-tap to zoom ----
         Box(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .onSizeChanged { boxSize = it }
                 .pointerInput(splitMode) {
-                    if (!splitMode) detectTapGestures(onPress = {
-                        showOriginal = true
-                        tryAwaitRelease()
-                        showOriginal = false
-                    })
+                    detectTransformGestures { _, panChange, zoomChange, _ ->
+                        val z = (zoom * zoomChange).coerceIn(1f, 6f)
+                        zoom = z
+                        pan = if (z <= 1.01f) Offset.Zero else clampPan(pan + panChange, z)
+                    }
+                }
+                .pointerInput(splitMode) {
+                    detectTapGestures(
+                        onTap = { fullScreen = !fullScreen },
+                        onDoubleTap = {
+                            if (zoom > 1.1f) { zoom = 1f; pan = Offset.Zero } else { zoom = 2.5f; pan = Offset.Zero }
+                        },
+                        onPress = {
+                            if (!splitMode) coroutineScope {
+                                val job = launch { delay(300); showOriginal = true }
+                                tryAwaitRelease()
+                                job.cancel()
+                                showOriginal = false
+                            }
+                        },
+                    )
                 },
             contentAlignment = Alignment.Center,
         ) {
             val shown = if (showOriginal) previewBase else (rendered ?: previewBase)
             val before = beforeImg
-            when {
-                loadFailed -> Text("Could not open this photo.", color = Muted)
-                shown == null -> CircularProgressIndicator(color = Amber)
-                splitMode && before != null -> SplitCompare(before, shown, split) { split = it }
-                else -> Image(
-                    shown.asImageBitmap(),
-                    contentDescription = "Photo",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize().padding(8.dp),
-                )
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    scaleX = zoom; scaleY = zoom
+                    translationX = pan.x; translationY = pan.y
+                },
+                contentAlignment = Alignment.Center,
+            ) {
+                when {
+                    loadFailed -> Text("Could not open this photo.", color = Muted)
+                    shown == null -> CircularProgressIndicator(color = Amber)
+                    splitMode && before != null -> SplitCompare(before, shown, split) { split = it }
+                    else -> Image(
+                        shown.asImageBitmap(),
+                        contentDescription = "Photo",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
             if (showOriginal) Pill("Original", Modifier.align(Alignment.TopCenter).padding(top = 12.dp))
-            else if (shown != null && !splitMode) Text(
-                "Hold to compare",
-                color = Color(0x88FFFFFF), fontSize = 11.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
-            )
+            if (zoom > 1.05f) Pill(String.format(Locale.US, "%.1fx", zoom), Modifier.align(Alignment.TopEnd).padding(8.dp))
+            if (fullScreen) Pill("Tap to show tools", Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
             busy?.let { label ->
                 Column(
                     Modifier.background(Color(0xCC000000), RoundedCornerShape(16.dp)).padding(20.dp),
@@ -270,129 +305,106 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
             }
         }
 
-        // ---- Tool tabs ----
-        ScrollableTabRow(
-            selectedTabIndex = tool.ordinal,
-            containerColor = Panel,
-            contentColor = Amber,
-            edgePadding = 8.dp,
-        ) {
-            Tool.entries.forEach { t ->
-                Tab(
-                    selected = tool == t,
-                    onClick = { tool = t },
-                    text = { Text(t.label, fontSize = 13.sp, color = if (tool == t) Amber else Color.White) },
-                )
-            }
-        }
-
-        // ---- Tool panel ----
-        Box(Modifier.fillMaxWidth().height(250.dp).background(Panel)) {
-            when (tool) {
-                Tool.AUTO -> AutoPanel(
-                    templates = templates,
-                    onAutoFix = {
-                        val pb = previewBase ?: return@AutoPanel
-                        runBusy("Auto fixing…") {
-                            val m = withContext(Dispatchers.Default) { AutoTools.autoFix(pb) }
-                            commit(params.withAll(m))
-                        }
-                    },
-                    onAutoAlign = {
-                        val pb = previewBase ?: return@AutoPanel
-                        runBusy("Aligning…") {
-                            val m = withContext(Dispatchers.Default) { autoAlign(pb, params) }
-                            commit(params.withAll(m))
-                            val deg = m["straighten"] ?: 0f
-                            context.toast(
-                                if (abs(deg) < 0.05f && abs(m["perspV"] ?: 0f) < 0.01f) "Already straight"
-                                else String.format(Locale.US, "Straightened %.1f°", deg),
-                            )
-                        }
-                    },
-                    onAutoNoise = {
-                        val w = working ?: return@AutoPanel
-                        runBusy("Measuring noise…") {
-                            val v = withContext(Dispatchers.Default) { AutoTools.autoNoise(w) }
-                            commit(params.with("noiseReduction", v))
-                            context.toast(
-                                when {
-                                    v < 0.05f -> "Very little noise found"
-                                    v < 0.35f -> "Light noise reduction applied"
-                                    else -> "Strong noise reduction applied"
-                                },
-                            )
-                        }
-                    },
-                    onApplyTemplate = { t -> commit(t.applyTo(params)) },
-                    onReset = { commit(EditParams()) },
-                    onSaveTemplate = { showSaveTemplate = true },
-                )
-                Tool.FILM -> FilmPanel(
-                    thumbBase = thumbBase,
-                    selectedId = params.filmId,
-                    strength = params["filmStrength"],
-                    onSelect = { look -> commit(params.withFilm(look)) },
-                    onStrength = { params = params.with("filmStrength", it) },
-                    onStrengthDone = { commit(params) },
-                )
-                Tool.LIGHT -> SliderPanel(Group.LIGHT, params, { params = it }, { commit(params) })
-                Tool.COLOUR -> SliderPanel(Group.COLOUR, params, { params = it }, { commit(params) })
-                Tool.PRESENCE -> SliderPanel(Group.PRESENCE, params, { params = it }, { commit(params) }) {
-                    Text(
-                        "Texture brings out fine detail, Clarity adds mid-tone punch, Dehaze cuts through haze and fog.",
-                        color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 16.dp),
+        if (!fullScreen) {
+            // ---- Tool panel (sized to its content, so the photo keeps most of the screen) ----
+            Column(Modifier.fillMaxWidth().background(Panel)) {
+                when (tool) {
+                    Tool.AUTO -> AutoPanel(
+                        templates = templates,
+                        onAutoFix = {
+                            val pb = previewBase ?: return@AutoPanel
+                            runBusy("Auto fixing…") {
+                                val m = withContext(Dispatchers.Default) { AutoTools.autoFix(pb) }
+                                commit(params.withAll(m))
+                            }
+                        },
+                        onAutoAlign = {
+                            val pb = previewBase ?: return@AutoPanel
+                            runBusy("Aligning…") {
+                                val m = withContext(Dispatchers.Default) { autoAlign(pb, params) }
+                                commit(params.withAll(m))
+                                val deg = m["straighten"] ?: 0f
+                                context.toast(
+                                    if (abs(deg) < 0.05f && abs(m["perspV"] ?: 0f) < 0.01f) "Already straight"
+                                    else String.format(Locale.US, "Straightened %.1f°", deg),
+                                )
+                            }
+                        },
+                        onAutoNoise = {
+                            val w = working ?: return@AutoPanel
+                            runBusy("Measuring noise…") {
+                                val v = withContext(Dispatchers.Default) { AutoTools.autoNoise(w) }
+                                commit(params.with("noiseReduction", v))
+                                context.toast(
+                                    when {
+                                        v < 0.05f -> "Very little noise found"
+                                        v < 0.35f -> "Light noise reduction applied"
+                                        else -> "Strong noise reduction applied"
+                                    },
+                                )
+                            }
+                        },
+                        onApplyTemplate = { t -> commit(t.applyTo(params)) },
+                        onReset = { commit(EditParams()) },
                     )
-                }
-                Tool.GRADING -> SliderPanel(Group.GRADING, params, { params = it }, { commit(params) })
-                Tool.DETAIL -> SliderPanel(Group.DETAIL, params, { params = it }, { commit(params) }) {
-                    OutlinedButton(
-                        onClick = {
-                            val w = working ?: return@OutlinedButton
+                    Tool.FILM -> FilmPanel(
+                        thumbBase = thumbBase,
+                        selectedId = params.filmId,
+                        strength = params["filmStrength"],
+                        onSelect = { look -> commit(params.withFilm(look)) },
+                        onStrength = { params = params.with("filmStrength", it) },
+                        onStrengthDone = { commit(params) },
+                    )
+                    Tool.LIGHT -> ChipSliderPanel(specsFor(Group.LIGHT), params, { params = it }, { commit(params) })
+                    Tool.COLOUR -> ChipSliderPanel(specsFor(Group.COLOUR), params, { params = it }, { commit(params) })
+                    Tool.PRESENCE -> ChipSliderPanel(specsFor(Group.PRESENCE), params, { params = it }, { commit(params) })
+                    Tool.GRADING -> ChipSliderPanel(specsFor(Group.GRADING), params, { params = it }, { commit(params) })
+                    Tool.DETAIL -> ChipSliderPanel(
+                        specsFor(Group.DETAIL), params, { params = it }, { commit(params) },
+                        extraLabel = "Auto denoise",
+                        onExtra = {
+                            val w = working ?: return@ChipSliderPanel
                             runBusy("Measuring noise…") {
                                 val v = withContext(Dispatchers.Default) { AutoTools.autoNoise(w) }
                                 commit(params.with("noiseReduction", v))
                             }
                         },
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    ) { Text("Auto noise reduction") }
+                    )
+                    Tool.EFFECTS -> EffectsPanel(params, { params = it }, { commit(params) }, { commit(it) })
+                    Tool.HSL -> HslPanel(params, { params = it }, { commit(params) })
+                    Tool.CROP -> CropPanel(
+                        params = params,
+                        onChange = { params = it },
+                        onDone = { commit(params) },
+                        onCommit = { commit(it) },
+                        onAutoAlign = {
+                            val pb = previewBase ?: return@CropPanel
+                            runBusy("Aligning…") {
+                                val m = withContext(Dispatchers.Default) { autoAlign(pb, params) }
+                                commit(params.withAll(m))
+                            }
+                        },
+                    )
                 }
-                Tool.EFFECTS -> SliderPanel(Group.EFFECTS, params, { params = it }, { commit(params) }) {
-                    Text("Border", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Adjustments.borderNames.forEachIndexed { i, name ->
-                            Choice(name, params["border"].roundToInt() == i) { commit(params.with("border", i.toFloat())) }
-                        }
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Date stamp", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        Switch(
-                            checked = params["dateStamp"] > 0.5f,
-                            onCheckedChange = { commit(params.with("dateStamp", if (it) 1f else 0f)) },
-                            colors = SwitchDefaults.colors(checkedTrackColor = Amber),
-                        )
-                    }
+            }
+
+            // ---- Tool tabs ----
+            Row(
+                Modifier.fillMaxWidth().background(Ink).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp, vertical = 2.dp),
+            ) {
+                Tool.entries.forEach { t ->
+                    val sel = tool == t
+                    Text(
+                        t.label,
+                        color = if (sel) Amber else Color.White,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { tool = t }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                    )
                 }
-                Tool.HSL -> HslPanel(params, { params = it }, { commit(params) })
-                Tool.CROP -> CropPanel(
-                    params = params,
-                    onChange = { params = it },
-                    onDone = { commit(params) },
-                    onCommit = { commit(it) },
-                    onAutoAlign = {
-                        val pb = previewBase ?: return@CropPanel
-                        runBusy("Aligning…") {
-                            val m = withContext(Dispatchers.Default) { autoAlign(pb, params) }
-                            commit(params.withAll(m))
-                        }
-                    },
-                )
             }
         }
     }
@@ -432,6 +444,8 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
     }
 }
 
+private fun specsFor(group: Group): List<Adjust> = Adjustments.all.filter { it.group == group && it.step == 0f }
+
 /** Auto align works on the photo after rotation/flip but before perspective and straightening. */
 private fun autoAlign(preview: Bitmap, p: EditParams): Map<String, Float> {
     val rot = ((p["rotation"].roundToInt() % 4) + 4) % 4
@@ -451,7 +465,123 @@ private fun shareImage(context: Context, uri: Uri, mime: String) {
     context.startActivity(Intent.createChooser(send, "Share photo"))
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/** Small pill used for picking one adjustment; shows a dot when it has been changed. */
+@Composable
+private fun ToolChip(label: String, selected: Boolean, changed: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) Amber else Color(0xFF2A2622))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (changed) {
+            Box(Modifier.size(6.dp).background(if (selected) Color(0xFF2B1A00) else Amber, CircleShape))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(label, color = if (selected) Color(0xFF2B1A00) else Color.White, fontSize = 12.sp)
+    }
+}
+
+/** One slider at a time: pick the adjustment from a row of chips. Double-tap the value to reset. */
+@Composable
+private fun SingleSlider(spec: Adjust, value: Float, onChange: (Float) -> Unit, onDone: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            onValueChangeFinished = onDone,
+            valueRange = spec.min..spec.max,
+            colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            formatValue(value, spec.min, spec.max),
+            color = if (abs(value - spec.default) > 1e-3f) Amber else Muted,
+            fontSize = 13.sp,
+            modifier = Modifier
+                .width(52.dp)
+                .padding(start = 8.dp)
+                .pointerInput(spec.key) {
+                    detectTapGestures(onDoubleTap = { onChange(spec.default); onDone() })
+                },
+        )
+    }
+}
+
+@Composable
+private fun ChipSliderPanel(
+    specs: List<Adjust>,
+    params: EditParams,
+    onChange: (EditParams) -> Unit,
+    onDone: () -> Unit,
+    extraLabel: String? = null,
+    onExtra: () -> Unit = {},
+) {
+    var key by remember(specs) { mutableStateOf(specs.first().key) }
+    val spec = specs.firstOrNull { it.key == key } ?: specs.first()
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            specs.forEach { s ->
+                ToolChip(s.label, s.key == spec.key, abs(params[s.key] - s.default) > 1e-3f) { key = s.key }
+            }
+            if (extraLabel != null) {
+                Text(
+                    extraLabel,
+                    color = Amber, fontSize = 12.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onExtra).padding(horizontal = 12.dp, vertical = 7.dp),
+                )
+            }
+        }
+        SingleSlider(spec, params[spec.key], { onChange(params.with(spec.key, it)) }, onDone)
+    }
+}
+
+@Composable
+private fun EffectsPanel(params: EditParams, onChange: (EditParams) -> Unit, onDone: () -> Unit, onCommit: (EditParams) -> Unit) {
+    val specs = remember { specsFor(Group.EFFECTS) }
+    var key by remember { mutableStateOf(specs.first().key) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            specs.forEach { s -> ToolChip(s.label, key == s.key, abs(params[s.key] - s.default) > 1e-3f) { key = s.key } }
+            ToolChip("Border", key == "border", params["border"] > 0.5f) { key = "border" }
+            ToolChip("Date stamp", key == "dateStamp", params["dateStamp"] > 0.5f) { key = "dateStamp" }
+        }
+        when (key) {
+            "border" -> Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Adjustments.borderNames.forEachIndexed { i, name ->
+                    Choice(name, params["border"].roundToInt() == i) { onCommit(params.with("border", i.toFloat())) }
+                }
+            }
+            "dateStamp" -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Orange date stamp in the corner", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Switch(
+                    checked = params["dateStamp"] > 0.5f,
+                    onCheckedChange = { onCommit(params.with("dateStamp", if (it) 1f else 0f)) },
+                    colors = SwitchDefaults.colors(checkedTrackColor = Amber),
+                )
+            }
+            else -> {
+                val spec = specs.first { it.key == key }
+                SingleSlider(spec, params[spec.key], { onChange(params.with(spec.key, it)) }, onDone)
+            }
+        }
+    }
+}
+
 @Composable
 private fun AutoPanel(
     templates: List<Template>,
@@ -460,34 +590,33 @@ private fun AutoPanel(
     onAutoNoise: () -> Unit,
     onApplyTemplate: (Template) -> Unit,
     onReset: () -> Unit,
-    onSaveTemplate: () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             AutoButton("Auto fix", Icons.Filled.AutoFixHigh, onAutoFix)
             AutoButton("Auto align", Icons.Filled.Straighten, onAutoAlign)
-            AutoButton("Auto denoise", Icons.Filled.Grain, onAutoNoise)
-            AutoButton("Reset all", Icons.Filled.RestartAlt, onReset)
+            AutoButton("Denoise", Icons.Filled.Grain, onAutoNoise)
+            AutoButton("Reset", Icons.Filled.RestartAlt, onReset)
         }
-        Spacer(Modifier.height(14.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("My templates", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            TextButton(onClick = onSaveTemplate) { Text("Save current as template") }
-        }
-        if (templates.isEmpty()) {
-            Text("No templates yet. Make an edit you like and save it as a template.", color = Muted, fontSize = 12.sp)
-        } else {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (templates.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
                 items(templates, key = { it.id }) { t ->
                     Column(
                         Modifier
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color(0xFF2A2622))
                             .clickable { onApplyTemplate(t) }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                     ) {
                         Text((if (t.favourite) "★ " else "") + t.name, color = Color.White, fontSize = 13.sp)
-                        Text(FilmLooks.byId(t.params.filmId)?.name ?: "Custom", color = Muted, fontSize = 10.sp)
+                        Text(FilmLooks.byId(t.params.filmId)?.name ?: "Template", color = Muted, fontSize = 10.sp)
                     }
                 }
             }
@@ -496,11 +625,17 @@ private fun AutoPanel(
 }
 
 @Composable
-private fun AutoButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick) {
-        Icon(icon, null, tint = Amber, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(label, color = Color.White)
+private fun AutoButton(label: String, icon: ImageVector, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF2A2622))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, null, tint = Amber, modifier = Modifier.size(22.dp))
+        Text(label, color = Color.White, fontSize = 12.sp)
     }
 }
 
@@ -513,15 +648,15 @@ private fun FilmPanel(
     onStrength: (Float) -> Unit,
     onStrengthDone: () -> Unit,
 ) {
-    var pack by remember { mutableStateOf<String?>(null) }
+    var pack by remember { mutableStateOf<String?>(FilmLooks.byId(selectedId)?.pack) }
     val looks = remember(pack) { FilmLooks.all.filter { pack == null || it.pack == pack } }
-    Column(Modifier.fillMaxSize().padding(top = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Choice("All", pack == null) { pack = null }
-            FilmLooks.packs.forEach { p -> Choice(p, pack == p) { pack = p } }
+            ToolChip("All", pack == null, false) { pack = null }
+            FilmLooks.packs.forEach { p -> ToolChip(p, pack == p, FilmLooks.byId(selectedId)?.pack == p) { pack = p } }
         }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 12.dp),
@@ -535,15 +670,14 @@ private fun FilmPanel(
         }
         if (selectedId != null) {
             Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Strength", color = Muted, fontSize = 12.sp)
                 Slider(
                     value = strength,
                     onValueChange = onStrength,
                     onValueChangeFinished = onStrengthDone,
                     colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    modifier = Modifier.weight(1f),
                 )
-                Text("${(strength * 100).roundToInt()}", color = Color.White, fontSize = 12.sp)
+                Text("${(strength * 100).roundToInt()}%", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
             }
         }
     }
@@ -559,12 +693,12 @@ private fun FilmThumb(look: FilmLook?, base: Bitmap?, selected: Boolean, onClick
         }.getOrNull()
     }
     Column(
-        Modifier.width(78.dp).clickable(onClick = onClick),
+        Modifier.width(66.dp).clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(
             Modifier
-                .size(72.dp)
+                .size(60.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .border(if (selected) 2.dp else 0.dp, if (selected) Amber else Color.Transparent, RoundedCornerShape(10.dp))
                 .background(Color(0xFF2A2622)),
@@ -578,56 +712,40 @@ private fun FilmThumb(look: FilmLook?, base: Bitmap?, selected: Boolean, onClick
         Text(
             look?.name ?: "Original",
             color = if (selected) Amber else Color.White,
-            fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
-    }
-}
-
-@Composable
-private fun SliderPanel(
-    group: Group,
-    params: EditParams,
-    onChange: (EditParams) -> Unit,
-    onDone: () -> Unit,
-    extra: @Composable () -> Unit = {},
-) {
-    val specs = remember(group) { Adjustments.all.filter { it.group == group && it.step == 0f } }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
-        specs.forEach { s ->
-            AdjustSlider(s.label, params[s.key], s.min, s.max, s.default, { onChange(params.with(s.key, it)) }, onDone)
-        }
-        extra()
-        Spacer(Modifier.height(8.dp))
     }
 }
 
 @Composable
 private fun HslPanel(params: EditParams, onChange: (EditParams) -> Unit, onDone: () -> Unit) {
     var band by remember { mutableIntStateOf(0) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
+    var part by remember { mutableStateOf('s') }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Adjustments.bands.forEachIndexed { i, (name, hue) ->
                 val rgb = FloatArray(3).also { LutBuilder.hsvToRgb(hue, 0.85f, 0.95f, it) }
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { band = i }) {
-                    Box(
-                        Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .background(Color(rgb[0], rgb[1], rgb[2]))
-                            .border(if (band == i) 3.dp else 0.dp, Color.White, CircleShape),
-                    )
-                    Text(name, color = if (band == i) Amber else Muted, fontSize = 10.sp)
-                }
+                Box(
+                    Modifier
+                        .size(if (band == i) 30.dp else 24.dp)
+                        .clip(CircleShape)
+                        .background(Color(rgb[0], rgb[1], rgb[2]))
+                        .border(if (band == i) 3.dp else 0.dp, Color.White, CircleShape)
+                        .clickable { band = i },
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            listOf('h' to "Hue", 's' to "Sat", 'l' to "Lum").forEach { (c, label) ->
+                ToolChip(label, part == c, abs(params[Adjustments.hslKey(band, c)]) > 1e-3f) { part = c }
             }
         }
-        Spacer(Modifier.height(6.dp))
-        listOf('h' to "Hue", 's' to "Saturation", 'l' to "Luminance").forEach { (part, label) ->
-            val key = Adjustments.hslKey(band, part)
-            AdjustSlider(label, params[key], -1f, 1f, 0f, { onChange(params.with(key, it)) }, onDone)
-        }
+        val key = Adjustments.hslKey(band, part)
+        val spec = Adjust(key, Adjustments.bands[band].first, Group.HIDDEN, -1f, 1f)
+        SingleSlider(spec, params[key], { onChange(params.with(key, it)) }, onDone)
     }
 }
 
@@ -639,10 +757,13 @@ private fun CropPanel(
     onCommit: (EditParams) -> Unit,
     onAutoAlign: () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
+    val specs = remember { listOf("straighten", "perspV", "perspH").mapNotNull { Adjustments.spec(it) } }
+    var key by remember { mutableStateOf("straighten") }
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = { onCommit(params.with("rotation", ((params["rotation"].roundToInt() + 3) % 4).toFloat())) }) {
                 Icon(Icons.Filled.RotateLeft, "Rotate left", tint = Color.White)
@@ -653,20 +774,22 @@ private fun CropPanel(
             IconButton(onClick = { onCommit(params.with("flipH", if (params["flipH"] > 0.5f) 0f else 1f)) }) {
                 Icon(Icons.Filled.Flip, "Flip", tint = Color.White)
             }
-            TextButton(onClick = onAutoAlign) { Text("Auto align") }
-        }
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
             Adjustments.cropNames.forEachIndexed { i, name ->
-                Choice(name, params["crop"].roundToInt() == i) { onCommit(params.with("crop", i.toFloat())) }
+                ToolChip(name, params["crop"].roundToInt() == i, false) { onCommit(params.with("crop", i.toFloat())) }
             }
         }
-        listOf("straighten", "perspV", "perspH").forEach { key ->
-            val s = Adjustments.spec(key)!!
-            AdjustSlider(s.label, params[key], s.min, s.max, s.default, { onChange(params.with(key, it)) }, onDone)
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            specs.forEach { s -> ToolChip(s.label, key == s.key, abs(params[s.key]) > 1e-3f) { key = s.key } }
+            Text(
+                "Auto align", color = Amber, fontSize = 12.sp,
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onAutoAlign).padding(horizontal = 12.dp, vertical = 7.dp),
+            )
         }
+        val spec = specs.first { it.key == key }
+        SingleSlider(spec, params[key], { onChange(params.with(key, it)) }, onDone)
     }
 }
 
@@ -694,10 +817,17 @@ private fun SaveTemplateDialog(onDismiss: () -> Unit, onSave: (String, Boolean) 
 
 @Composable
 private fun ExportDialog(onDismiss: () -> Unit, onExport: (ExportFormat, Int, Int, Boolean) -> Unit) {
-    var format by remember { mutableStateOf(ExportFormat.JPEG) }
-    var sizeIndex by remember { mutableIntStateOf(0) }
-    var quality by remember { mutableFloatStateOf(92f) }
+    val formats = ExportFormat.entries
+    var format by remember { mutableStateOf(formats[Settings.exportFormat.coerceIn(0, formats.size - 1)]) }
     val sizes = listOf("Full" to 4096, "2048 px" to 2048, "1080 px" to 1080)
+    var sizeIndex by remember { mutableIntStateOf(Settings.exportSize.coerceIn(0, sizes.size - 1)) }
+    var quality by remember { mutableFloatStateOf(Settings.exportQuality.toFloat().coerceIn(60f, 100f)) }
+    fun go(share: Boolean) {
+        Settings.exportFormat = format.ordinal
+        Settings.exportSize = sizeIndex
+        Settings.exportQuality = quality.roundToInt()
+        onExport(format, sizes[sizeIndex].second, quality.roundToInt(), share)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Export") },
@@ -705,7 +835,7 @@ private fun ExportDialog(onDismiss: () -> Unit, onExport: (ExportFormat, Int, In
             Column {
                 Text("Format", color = Muted, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ExportFormat.entries.forEach { f -> Choice(f.label, format == f) { format = f } }
+                    formats.forEach { f -> Choice(f.label, format == f) { format = f } }
                 }
                 Text("Size (longest side)", color = Muted, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -723,14 +853,13 @@ private fun ExportDialog(onDismiss: () -> Unit, onExport: (ExportFormat, Int, In
         },
         confirmButton = {
             Row {
-                TextButton(onClick = { onExport(format, sizes[sizeIndex].second, quality.roundToInt(), true) }) { Text("Save & share") }
-                TextButton(onClick = { onExport(format, sizes[sizeIndex].second, quality.roundToInt(), false) }) { Text("Save") }
+                TextButton(onClick = { go(true) }) { Text("Save & share") }
+                TextButton(onClick = { go(false) }) { Text("Save") }
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
-
 
 /** Before/after view: drag anywhere on the photo to move the divider. */
 @Composable
@@ -738,7 +867,6 @@ private fun SplitCompare(before: Bitmap, after: Bitmap, split: Float, onSplit: (
     Box(
         Modifier
             .fillMaxSize()
-            .padding(8.dp)
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { onSplit((it.x / size.width).coerceIn(0f, 1f)) },
@@ -746,9 +874,6 @@ private fun SplitCompare(before: Bitmap, after: Bitmap, split: Float, onSplit: (
                     change.consume()
                     onSplit((change.position.x / size.width).coerceIn(0f, 1f))
                 }
-            }
-            .pointerInput(Unit) {
-                detectTapGestures { onSplit((it.x / size.width).coerceIn(0f, 1f)) }
             },
     ) {
         Image(after.asImageBitmap(), "After", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
@@ -762,10 +887,10 @@ private fun SplitCompare(before: Bitmap, after: Bitmap, split: Float, onSplit: (
         )
         Canvas(Modifier.fillMaxSize()) {
             val x = size.width * split
-            drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 3f)
-            drawCircle(Color.White, radius = 18.dp.toPx(), center = Offset(x, size.height / 2f))
-            drawCircle(Amber, radius = 15.dp.toPx(), center = Offset(x, size.height / 2f))
             val y = size.height / 2f
+            drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 3f)
+            drawCircle(Color.White, radius = 18.dp.toPx(), center = Offset(x, y))
+            drawCircle(Amber, radius = 15.dp.toPx(), center = Offset(x, y))
             val a = 6.dp.toPx()
             drawLine(Color.Black, Offset(x - a, y), Offset(x - a * 0.2f, y - a * 0.7f), strokeWidth = 4f)
             drawLine(Color.Black, Offset(x - a, y), Offset(x - a * 0.2f, y + a * 0.7f), strokeWidth = 4f)

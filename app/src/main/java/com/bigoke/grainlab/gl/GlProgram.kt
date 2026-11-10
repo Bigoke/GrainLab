@@ -40,6 +40,7 @@ layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aTex;
 uniform mat4 uTexMatrix;
 uniform vec2 uPosScale;
+uniform vec2 uPosOffset;
 uniform float uRot;
 out vec2 vTex;
 void main() {
@@ -47,7 +48,7 @@ void main() {
     float c = cos(uRot);
     float s = sin(uRot);
     p = vec2(p.x * c + p.y * s, -p.x * s + p.y * c);
-    gl_Position = vec4(p * uPosScale, 0.0, 1.0);
+    gl_Position = vec4(p * uPosScale + uPosOffset, 0.0, 1.0);
     vTex = (uTexMatrix * aTex).xy;
 }
 """
@@ -205,6 +206,7 @@ class GlProgram(private val external: Boolean) {
     private val id: Int
     private val uTexMatrix: Int
     private val uPosScale: Int
+    private val uPosOffset: Int
     private val uRot: Int
     private val uTex: Int
     private val uLut: Int
@@ -231,6 +233,7 @@ class GlProgram(private val external: Boolean) {
         id = GlUtil.program(Shaders.VERTEX, Shaders.fragment(external))
         uTexMatrix = GLES20.glGetUniformLocation(id, "uTexMatrix")
         uPosScale = GLES20.glGetUniformLocation(id, "uPosScale")
+        uPosOffset = GLES20.glGetUniformLocation(id, "uPosOffset")
         uRot = GLES20.glGetUniformLocation(id, "uRot")
         uTex = GLES20.glGetUniformLocation(id, "uTex")
         uLut = GLES20.glGetUniformLocation(id, "uLut")
@@ -264,6 +267,7 @@ class GlProgram(private val external: Boolean) {
         posScaleX: Float = 1f,
         posScaleY: Float = 1f,
         rotation: Float = 0f,
+        posOffsetY: Float = 0f,
     ) {
         GLES20.glUseProgram(id)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -275,6 +279,7 @@ class GlProgram(private val external: Boolean) {
 
         GLES20.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES20.glUniform2f(uPosScale, posScaleX, posScaleY)
+        GLES20.glUniform2f(uPosOffset, 0f, posOffsetY)
         GLES20.glUniform1f(uRot, rotation)
         GLES20.glUniform2f(uTexel, texelW, texelH)
         GLES20.glUniform1f(uScale, scale)

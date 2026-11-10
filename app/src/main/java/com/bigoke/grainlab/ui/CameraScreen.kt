@@ -12,6 +12,9 @@ import android.view.Surface
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.DisplayOrientedMeteringPointFactory
@@ -38,10 +41,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -49,6 +52,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -56,46 +60,42 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bookmarks
-import androidx.compose.material.icons.filled.BurstMode
 import androidx.compose.material.icons.filled.Cameraswitch
-import androidx.compose.material.icons.filled.Exposure
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FlashAuto
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.GridOff
-import androidx.compose.material.icons.filled.GridOn
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Timer10
-import androidx.compose.material.icons.filled.Timer3
-import androidx.compose.material.icons.filled.TimerOff
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -113,10 +113,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -124,17 +126,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.bigoke.grainlab.data.Lens
+import com.bigoke.grainlab.data.LensCatalog
+import com.bigoke.grainlab.data.Settings
 import com.bigoke.grainlab.data.Template
 import com.bigoke.grainlab.data.TemplateStore
 import com.bigoke.grainlab.edit.EditParams
 import com.bigoke.grainlab.edit.FilmLook
 import com.bigoke.grainlab.edit.FilmLooks
-import com.bigoke.grainlab.edit.Geometry
 import com.bigoke.grainlab.edit.Pipeline
 import com.bigoke.grainlab.gl.CameraGlRenderer
-import com.bigoke.grainlab.io.BitmapLoader
-import com.bigoke.grainlab.io.ExportFormat
-import com.bigoke.grainlab.io.MediaSaver
 import com.bigoke.grainlab.video.VideoDeveloper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -164,6 +165,14 @@ sealed class Look(val title: String) {
         is Film -> EditParams().withFilm(film)
         is Tmpl -> template.params
     }
+
+    companion object {
+        fun fromKey(key: String, templates: List<Template>): Look = when {
+            key.startsWith("f:") -> FilmLooks.byId(key.removePrefix("f:"))?.let { Film(it) } ?: None
+            key.startsWith("t:") -> templates.firstOrNull { it.id == key.removePrefix("t:") }?.let { Tmpl(it) } ?: None
+            else -> None
+        }
+    }
 }
 
 private enum class Mode { PHOTO, VIDEO }
@@ -184,6 +193,12 @@ private fun permissionsToAsk(): Array<String> {
     val list = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     if (Build.VERSION.SDK_INT < 29) list.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
     return list.toTypedArray()
+}
+
+private fun lookList(templates: List<Template>, packFilter: String?): List<Look> = buildList {
+    add(Look.None)
+    if (packFilter == null || packFilter == MINE) templates.forEach { add(Look.Tmpl(it)) }
+    if (packFilter != MINE) FilmLooks.all.filter { packFilter == null || it.pack == packFilter }.forEach { add(Look.Film(it)) }
 }
 
 @Composable
@@ -221,6 +236,7 @@ fun CameraScreen(onOpenEditor: (Uri) -> Unit, onOpenTemplates: () -> Unit, onOpe
     CameraView(onOpenEditor, onOpenTemplates, onOpenBatch, openGallery)
 }
 
+@OptIn(ExperimentalCamera2Interop::class)
 @SuppressLint("MissingPermission")
 @Composable
 private fun CameraView(
@@ -250,20 +266,48 @@ private fun CameraView(
     }
     val cam = remember { CamHolder() }
 
+    // Reserve the status bar plus the top bar so the picture sits right under the controls.
+    val topInsetPx = WindowInsets.statusBars.getTop(density) + with(density) { 56.dp.toPx() }
+    SideEffect { renderer.topInsetPx = topInsetPx }
+
+    // ---- Remembered settings ----
+    var lensBack by remember { mutableStateOf(Settings.lensBack) }
+    var mode by remember { mutableStateOf(if (Settings.videoMode) Mode.VIDEO else Mode.PHOTO) }
+    var wide by remember { mutableStateOf(Settings.wide) }
+    var flash by remember { mutableIntStateOf(Settings.flash) }
+    var timer by remember { mutableIntStateOf(Settings.timer) }
+    var grid by remember { mutableStateOf(Settings.grid) }
+    var saveOriginal by remember { mutableStateOf(Settings.saveOriginal) }
+    var quality by remember { mutableIntStateOf(Settings.videoQuality) }
+    var packFilter by remember { mutableStateOf(Settings.packFilter) }
+    var look by remember { mutableStateOf(Look.fromKey(Settings.lookKey, TemplateStore.items.value)) }
+    var strength by remember { mutableFloatStateOf(Settings.lookStrength) }
+    var lensId by remember { mutableStateOf(Settings.lensId ?: "z1") }
+
+    LaunchedEffect(lensBack, mode, wide, flash, timer, grid, saveOriginal, quality, packFilter, look.key, strength, lensId) {
+        Settings.lensBack = lensBack
+        Settings.videoMode = mode == Mode.VIDEO
+        Settings.wide = wide
+        Settings.flash = flash
+        Settings.timer = timer
+        Settings.grid = grid
+        Settings.saveOriginal = saveOriginal
+        Settings.videoQuality = quality
+        Settings.packFilter = packFilter
+        Settings.lookKey = look.key
+        Settings.lookStrength = strength
+        Settings.lensId = lensId
+    }
+
+    // ---- Session state ----
     var surfaceGen by remember { mutableIntStateOf(0) }
     var contentAspect by remember { mutableFloatStateOf(3f / 4f) }
-    var lensBack by remember { mutableStateOf(true) }
-    var mode by remember { mutableStateOf(Mode.PHOTO) }
-    var wide by remember { mutableStateOf(false) }
-    var flash by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
-    var timer by remember { mutableIntStateOf(0) }
-    var grid by remember { mutableStateOf(false) }
-    var saveOriginal by remember { mutableStateOf(false) }
-    var look by remember { mutableStateOf<Look>(Look.None) }
-    var strength by remember { mutableFloatStateOf(1f) }
-    var showExposure by remember { mutableStateOf(false) }
+    var lenses by remember { mutableStateOf<List<Lens>>(emptyList()) }
+    var zoomRatio by remember { mutableFloatStateOf(1f) }
     var exposureIndex by remember { mutableIntStateOf(0) }
-    var busy by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showLooks by remember { mutableStateOf(false) }
+    var lookToast by remember { mutableStateOf<String?>(null) }
     var countdown by remember { mutableIntStateOf(0) }
     var lastUri by remember { mutableStateOf<Uri?>(null) }
     var lastThumb by remember { mutableStateOf<Bitmap?>(null) }
@@ -271,18 +315,20 @@ private fun CameraView(
     var paused by remember { mutableStateOf(false) }
     var recordSeconds by remember { mutableLongStateOf(0L) }
     var developing by remember { mutableStateOf<Int?>(null) }
-    var quality by remember { mutableIntStateOf(1) }
-    var menuOpen by remember { mutableStateOf(false) }
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var flashOverlay by remember { mutableStateOf(false) }
-    var packFilter by remember { mutableStateOf<String?>(null) }
+
     val pendingShots by PhotoDeveloper.pending.collectAsState()
     val lastShot by PhotoDeveloper.last.collectAsState()
     LaunchedEffect(lastShot) { lastShot?.let { lastUri = it.first; lastThumb = it.second } }
     val shotErrors by PhotoDeveloper.errors.collectAsState()
     LaunchedEffect(shotErrors) { if (shotErrors > 0) context.toast("A photo could not be saved") }
 
-    // Video timer keeps ticking every second while recording and not paused.
+    val looks = remember(templates, packFilter) { lookList(templates, packFilter) }
+    val effective = remember(look.key, strength) { look.params().scaled(strength) }
+    val currentLens = lenses.firstOrNull { it.id == lensId }
+    val bindCameraId = if (lensBack) currentLens?.cameraId else null
+
     LaunchedEffect(recording, paused) {
         if (recording != null && !paused) {
             while (true) {
@@ -291,8 +337,9 @@ private fun CameraView(
             }
         }
     }
-
-    val effective = remember(look.key, strength) { look.params().scaled(strength) }
+    LaunchedEffect(lookToast) {
+        if (lookToast != null) { delay(1100); lookToast = null }
+    }
 
     DisposableEffect(renderer) {
         renderer.onSurfaceReady = { surfaceGen++ }
@@ -323,11 +370,18 @@ private fun CameraView(
         }
     }
 
-    // Push the chosen look's lookup table to the viewfinder.
     LaunchedEffect(effective, surfaceGen) {
         val p = effective
         val lut = withContext(Dispatchers.Default) { Pipeline.lutFor(p, useCache = false) }
         renderer.setLook(p, lut)
+    }
+
+    fun setZoom(z: Float) {
+        val c = cam.camera ?: return
+        val st = c.cameraInfo.zoomState.value
+        val clamped = if (st != null) z.coerceIn(st.minZoomRatio, st.maxZoomRatio) else z
+        c.cameraControl.setZoomRatio(clamped)
+        zoomRatio = clamped
     }
 
     fun provideSurface(request: SurfaceRequest) {
@@ -348,12 +402,11 @@ private fun CameraView(
             renderer.resetAspect()
             val surface = Surface(st)
             request.provideSurface(surface, mainExecutor) { surface.release() }
-            glView.post { contentAspect = renderer.contentAspect() }
         }
     }
 
-    // (Re)bind the camera when the surface, lens, mode or format changes.
-    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality) {
+    // ---- Bind the camera ----
+    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId) {
         if (surfaceGen == 0) return@LaunchedEffect
         val provider = awaitProvider(context)
         cam.provider = provider
@@ -362,7 +415,13 @@ private fun CameraView(
         val selector = ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build()
         val preview = Preview.Builder().setResolutionSelector(selector).build()
         preview.setSurfaceProvider(mainExecutor) { provideSurface(it) }
-        val cameraSelector = if (lensBack) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+        val cameraSelector = when {
+            !lensBack -> CameraSelector.DEFAULT_FRONT_CAMERA
+            bindCameraId != null -> CameraSelector.Builder()
+                .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == bindCameraId } }
+                .build()
+            else -> CameraSelector.DEFAULT_BACK_CAMERA
+        }
         renderer.mirror = !lensBack
         try {
             provider.unbindAll()
@@ -376,7 +435,7 @@ private fun CameraView(
                 cam.videoCapture = null
                 cam.camera = provider.bindToLifecycle(lifecycleOwner, cameraSelector, preview, ic)
             } else {
-                val q = listOf(Quality.HD, Quality.FHD, Quality.UHD)[quality]
+                val q = listOf(Quality.HD, Quality.FHD, Quality.UHD)[quality.coerceIn(0, 2)]
                 val recorder = Recorder.Builder()
                     .setQualitySelector(QualitySelector.from(q, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
                     .build()
@@ -389,8 +448,44 @@ private fun CameraView(
             }
             exposureIndex = 0
         } catch (e: Exception) {
-            context.toast("Camera error: ${e.message}")
+            // A separate lens that cannot be opened falls back to the main camera.
+            if (bindCameraId != null) {
+                lensId = "z1"
+                context.toast("That lens is not available to apps on this phone")
+            } else context.toast("Camera error: ${e.message}")
+            return@LaunchedEffect
         }
+
+        // Wait for the zoom range, then build the lens buttons once and restore the zoom.
+        val c = cam.camera ?: return@LaunchedEffect
+        var zs = c.cameraInfo.zoomState.value
+        var tries = 0
+        while (zs == null && tries < 20) { delay(100); zs = c.cameraInfo.zoomState.value; tries++ }
+        if (lensBack && bindCameraId == null && lenses.isEmpty() && zs != null) {
+            val built = withContext(Dispatchers.Default) {
+                LensCatalog.backLenses(context, zs.minZoomRatio, zs.maxZoomRatio)
+            }
+            lenses = built
+            if (built.none { it.id == lensId }) lensId = "z1"
+        }
+        val target = if (lensBack) (lenses.firstOrNull { it.id == lensId }?.zoom ?: 1f) else 1f
+        setZoom(target)
+    }
+
+    fun selectLens(l: Lens) {
+        val sameCamera = l.cameraId == bindCameraId
+        lensId = l.id
+        if (sameCamera) setZoom(l.zoom)
+        // A different camera id rebinds through bindCameraId; the zoom is set after binding.
+    }
+
+    fun changeLook(step: Int) {
+        if (looks.isEmpty()) return
+        val idx = looks.indexOfFirst { it.key == look.key }
+        val next = looks[((if (idx < 0) 0 else idx) + step + looks.size) % looks.size]
+        look = next
+        strength = 1f
+        lookToast = next.title
     }
 
     fun takePhoto() {
@@ -476,46 +571,61 @@ private fun CameraView(
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(factory = { glView }, modifier = Modifier.fillMaxSize())
 
-        // Gestures, grid and focus ring over the picture area.
+        // ---- Viewfinder gestures: tap to focus, pinch to zoom, swipe to change look ----
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, _, zoom, _ ->
-                        val c = cam.camera ?: return@detectTransformGestures
-                        val z = c.cameraInfo.zoomState.value ?: return@detectTransformGestures
-                        c.cameraControl.setZoomRatio((z.zoomRatio * zoom).coerceIn(z.minZoomRatio, z.maxZoomRatio))
-                    }
-                }
-                .pointerInput(Unit) {
-                    detectTapGestures { off ->
-                        val c = cam.camera ?: return@detectTapGestures
-                        val vw = size.width.toFloat()
-                        val vh = size.height.toFloat()
-                        val a = renderer.contentAspect()
-                        val cw = if (vw / vh > a) vh * a else vw
-                        val ch = if (vw / vh > a) vh else vw / a
-                        val left = (vw - cw) / 2f
-                        val top = (vh - ch) / 2f
-                        if (off.x < left || off.x > left + cw || off.y < top || off.y > top + ch) return@detectTapGestures
-                        val display = glView.display ?: return@detectTapGestures
-                        val factory = DisplayOrientedMeteringPointFactory(display, c.cameraInfo, cw, ch)
-                        val point = factory.createPoint(off.x - left, off.y - top)
-                        c.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
-                        focusPoint = off
+                .pointerInput(looks, topInsetPx) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var totalX = 0f
+                        var totalY = 0f
+                        var multi = false
+                        var moved = false
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.size > 1) {
+                                multi = true
+                                val z = event.calculateZoom()
+                                if (z != 1f) setZoom(zoomRatio * z)
+                                event.changes.forEach { it.consume() }
+                            } else if (!multi) {
+                                val d = event.changes.first().positionChange()
+                                totalX += d.x
+                                totalY += d.y
+                                if (abs(totalX) > viewConfiguration.touchSlop || abs(totalY) > viewConfiguration.touchSlop) moved = true
+                            }
+                        } while (event.changes.any { it.pressed })
+                        if (!multi) {
+                            if (moved && abs(totalX) > 60.dp.toPx() && abs(totalX) > abs(totalY) * 1.5f) {
+                                changeLook(if (totalX < 0) 1 else -1)
+                            } else if (!moved) {
+                                if (showSettings || showLooks) {
+                                    showSettings = false
+                                    showLooks = false
+                                } else {
+                                    val c = cam.camera
+                                    val rect = CameraGlRenderer.contentRect(size.width.toFloat(), size.height.toFloat(), renderer.contentAspect(), topInsetPx)
+                                    val p = down.position
+                                    val inside = p.x >= rect[0] && p.x <= rect[0] + rect[2] && p.y >= rect[1] && p.y <= rect[1] + rect[3]
+                                    val display = glView.display
+                                    if (c != null && inside && display != null) {
+                                        val factory = DisplayOrientedMeteringPointFactory(display, c.cameraInfo, rect[2], rect[3])
+                                        val point = factory.createPoint(p.x - rect[0], p.y - rect[1])
+                                        c.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
+                                        focusPoint = p
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
         ) {
-            val vw = constraints.maxWidth.toFloat()
-            val vh = constraints.maxHeight.toFloat()
-            val a = contentAspect
-            val cw = if (vw / vh > a) vh * a else vw
-            val ch = if (vw / vh > a) vh else vw / a
-            val left = (vw - cw) / 2f
-            val top = (vh - ch) / 2f
+            val rect = CameraGlRenderer.contentRect(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(), contentAspect, topInsetPx)
+            val left = rect[0]; val top = rect[1]; val cw = rect[2]; val ch = rect[3]
             if (grid) {
                 Canvas(Modifier.fillMaxSize()) {
-                    val line = Color(0x66FFFFFF)
+                    val line = Color(0x55FFFFFF)
                     for (i in 1..2) {
                         val x = left + cw * i / 3f
                         val y = top + ch * i / 3f
@@ -530,21 +640,24 @@ private fun CameraView(
                     drawCircle(Amber, radius = 42f, center = fp, style = Stroke(width = 3f))
                 }
             }
+            val centreY = with(density) { (top + ch / 2f).toDp() }
             if (countdown > 0) {
                 Text(
                     "$countdown",
-                    modifier = Modifier.align(Alignment.Center),
-                    fontSize = 96.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    modifier = Modifier.align(Alignment.TopCenter).offset(y = centreY - 60.dp),
+                    fontSize = 96.sp, fontWeight = FontWeight.Bold, color = Color.White,
                 )
+            }
+            lookToast?.let {
+                Pill(it, Modifier.align(Alignment.TopCenter).offset(y = centreY - 16.dp))
             }
         }
 
-        // ---- Top bar ----
+        if (flashOverlay) Box(Modifier.fillMaxSize().background(Color(0x99FFFFFF)))
+
+        // ---- Top bar: only flash, format and settings ----
         Row(
-            Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            Modifier.fillMaxWidth().statusBarsPadding().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (mode == Mode.PHOTO) {
@@ -565,71 +678,77 @@ private fun CameraView(
                         contentDescription = "Flash", tint = Color.White,
                     )
                 }
-                IconButton(onClick = { timer = when (timer) { 0 -> 3; 3 -> 10; else -> 0 } }) {
-                    Icon(
-                        when (timer) { 3 -> Icons.Filled.Timer3; 10 -> Icons.Filled.Timer10; else -> Icons.Filled.TimerOff },
-                        contentDescription = "Timer", tint = if (timer > 0) Amber else Color.White,
-                    )
-                }
-                TextButton(onClick = { wide = !wide }) {
-                    Text(if (wide) "16:9" else "4:3", color = Color.White)
-                }
+                TextButton(onClick = { wide = !wide }) { Text(if (wide) "16:9" else "4:3", color = Color.White) }
             } else {
-                Icon(Icons.Filled.Timer, contentDescription = null, tint = Color.Transparent, modifier = Modifier.size(24.dp))
-                TextButton(
-                    onClick = { if (recording == null) quality = (quality + 1) % 3 },
-                ) { Text(listOf("HD", "Full HD", "4K")[quality], color = Color.White) }
-            }
-            IconButton(onClick = { grid = !grid }) {
-                Icon(if (grid) Icons.Filled.GridOn else Icons.Filled.GridOff, contentDescription = "Grid", tint = Color.White)
-            }
-            IconButton(onClick = { showExposure = !showExposure }) {
-                Icon(Icons.Filled.Exposure, contentDescription = "Exposure", tint = if (showExposure) Amber else Color.White)
-            }
-            Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Color.White)
+                TextButton(onClick = { if (recording == null) quality = (quality + 1) % 3 }) {
+                    Text(listOf("HD", "FHD", "4K")[quality.coerceIn(0, 2)], color = Color.White)
                 }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("My templates") },
-                        leadingIcon = { Icon(Icons.Filled.Bookmarks, null) },
-                        onClick = { menuOpen = false; onOpenTemplates() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Batch edit photos") },
-                        leadingIcon = { Icon(Icons.Filled.BurstMode, null) },
-                        onClick = { menuOpen = false; onOpenBatch() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Also save original") },
-                        leadingIcon = { Checkbox(checked = saveOriginal, onCheckedChange = null) },
-                        onClick = { saveOriginal = !saveOriginal },
+            }
+            if (timer > 0) Text("${timer}s", color = Amber, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
+            Spacer(Modifier.weight(1f))
+            if (recording != null) {
+                Row(
+                    Modifier
+                        .background(if (paused) Color(0xCC444444) else Color(0xDDD32F2F), RoundedCornerShape(50))
+                        .padding(horizontal = 14.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (!paused) Box(Modifier.size(9.dp).background(Color.White, CircleShape))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        (if (paused) "PAUSED " else "") + String.format(Locale.US, "%02d:%02d", recordSeconds / 60, recordSeconds % 60),
+                        color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold,
                     )
                 }
+                Spacer(Modifier.weight(1f))
+            }
+            IconButton(onClick = { showSettings = !showSettings; showLooks = false }) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = if (showSettings) Amber else Color.White)
             }
         }
 
-        if (flashOverlay) Box(Modifier.fillMaxSize().background(Color(0x99FFFFFF)))
-
-        // Recording timer, always visible under the top bar while recording.
-        if (recording != null) {
-            Row(
+        // ---- Settings panel ----
+        if (showSettings) {
+            Column(
                 Modifier
-                    .align(Alignment.TopCenter)
                     .statusBarsPadding()
-                    .padding(top = 60.dp)
-                    .background(if (paused) Color(0xCC444444) else Color(0xDDD32F2F), RoundedCornerShape(50))
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(top = 56.dp, start = 12.dp, end = 12.dp)
+                    .fillMaxWidth()
+                    .background(Color(0xEE16140F), RoundedCornerShape(16.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (!paused) Box(Modifier.size(10.dp).background(Color.White, CircleShape))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    (if (paused) "PAUSED  " else "") +
-                        String.format(Locale.US, "%02d:%02d", recordSeconds / 60, recordSeconds % 60),
-                    color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold,
-                )
+                SettingRow("Timer") {
+                    listOf(0, 3, 10).forEach { t -> Choice(if (t == 0) "Off" else "${t}s", timer == t) { timer = t } }
+                }
+                SwitchRow("Grid", grid) { grid = it }
+                if (mode == Mode.PHOTO) SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
+                if (mode == Mode.VIDEO) SettingRow("Video") {
+                    listOf("HD", "Full HD", "4K").forEachIndexed { i, q -> Choice(q, quality == i) { if (recording == null) quality = i } }
+                }
+                val state = cam.camera?.cameraInfo?.exposureState
+                if (state != null && state.isExposureCompensationSupported) {
+                    val range = state.exposureCompensationRange
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Exposure", color = Color.White, fontSize = 13.sp, modifier = Modifier.width(80.dp))
+                        Slider(
+                            value = exposureIndex.toFloat(),
+                            onValueChange = {
+                                exposureIndex = it.toInt()
+                                cam.camera?.cameraControl?.setExposureCompensationIndex(exposureIndex)
+                            },
+                            valueRange = range.lower.toFloat()..range.upper.toFloat(),
+                            steps = (range.upper - range.lower - 1).coerceAtLeast(0),
+                            colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { showSettings = false; onOpenTemplates() }) { Text("My templates") }
+                    OutlinedButton(onClick = { showSettings = false; onOpenBatch() }) { Text("Batch edit") }
+                }
+                TextButton(onClick = { showSettings = false; onGallery() }) { Text("Edit a photo from gallery") }
             }
         }
 
@@ -638,67 +757,96 @@ private fun CameraView(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color(0x99000000))
                 .navigationBarsPadding()
                 .padding(bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (showExposure) {
-                val c = cam.camera
-                val state = c?.cameraInfo?.exposureState
-                if (state != null && state.isExposureCompensationSupported) {
-                    val range = state.exposureCompensationRange
-                    Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("EV", color = Color.White, fontSize = 12.sp)
-                        Slider(
-                            value = exposureIndex.toFloat(),
-                            onValueChange = {
-                                exposureIndex = it.toInt()
-                                c?.cameraControl?.setExposureCompensationIndex(exposureIndex)
-                            },
-                            valueRange = range.lower.toFloat()..range.upper.toFloat(),
-                            steps = (range.upper - range.lower - 1).coerceAtLeast(0),
-                            colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                        )
+            if (showLooks) {
+                Column(Modifier.fillMaxWidth().background(Color(0xDD0E0D0B)).padding(vertical = 6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        (listOf<String?>(null, MINE) + FilmLooks.packs).forEach { f ->
+                            val sel = packFilter == f
+                            Text(
+                                f ?: "All",
+                                color = if (sel) Color(0xFF2B1A00) else Color.White,
+                                fontSize = 12.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(if (sel) Amber else Color(0x44FFFFFF))
+                                    .clickable { packFilter = f }
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                    LookStrip(looks, look) { look = it; strength = 1f }
+                    if (look != Look.None) {
+                        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Strength", color = Muted, fontSize = 12.sp)
+                            Slider(
+                                value = strength,
+                                onValueChange = { strength = it },
+                                colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
+                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                            )
+                            Text("${(strength * 100).toInt()}%", color = Color.White, fontSize = 12.sp)
+                        }
                     }
                 }
             }
-            if (look != Look.None) {
-                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(look.title, color = Amber, fontSize = 12.sp, modifier = Modifier.width(110.dp))
-                    Slider(
-                        value = strength,
-                        onValueChange = { strength = it },
-                        colors = SliderDefaults.colors(thumbColor = Amber, activeTrackColor = Amber),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text("${(strength * 100).toInt()}%", color = Color.White, fontSize = 12.sp)
+
+            // Lens buttons
+            if (lensBack && lenses.size > 1) {
+                Row(
+                    Modifier
+                        .padding(vertical = 6.dp)
+                        .background(Color(0x66000000), RoundedCornerShape(50))
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    val active = activeLens(lenses, currentLens, zoomRatio)
+                    lenses.forEach { l ->
+                        val sel = l.id == active?.id
+                        val label = if (sel && l.cameraId == null && abs(zoomRatio - l.zoom) > 0.05f) LensCatalog.label(zoomRatio) else l.label
+                        Box(
+                            Modifier
+                                .size(if (sel) 44.dp else 38.dp)
+                                .clip(CircleShape)
+                                .background(if (sel) Color(0xCC000000) else Color(0x55000000))
+                                .clickable { selectLens(l) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, color = if (sel) Amber else Color.White, fontSize = if (sel) 13.sp else 11.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
+            } else if (zoomRatio > 1.05f) {
+                Pill(LensCatalog.label(zoomRatio), Modifier.padding(vertical = 6.dp))
             }
+
+            // Current look chip: tap to open the looks drawer
             Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                Modifier
+                    .padding(vertical = 4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (look == Look.None) Color(0x66000000) else Color(0xCC000000))
+                    .clickable { showLooks = !showLooks; showSettings = false }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                val filters = listOf<String?>(null, MINE) + FilmLooks.packs
-                filters.forEach { f ->
-                    val sel = packFilter == f
-                    Text(
-                        f ?: "All",
-                        color = if (sel) Color(0xFF2B1A00) else Color.White,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(if (sel) Amber else Color(0x66000000))
-                            .clickable { packFilter = f }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
+                Text(
+                    if (look == Look.None) "Looks" else look.title,
+                    color = if (look == Look.None) Color.White else Amber,
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp),
+                )
+                Icon(if (showLooks) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess, null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
-            LookStrip(templates, look, packFilter) { look = it; strength = 1f }
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                horizontalArrangement = Arrangement.Center,
-            ) {
+
+            // Photo / video
+            Row(Modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
                 listOf(Mode.PHOTO to "PHOTO", Mode.VIDEO to "VIDEO").forEach { (m, label) ->
                     Text(
                         label,
@@ -706,17 +854,18 @@ private fun CameraView(
                         fontWeight = if (mode == m) FontWeight.Bold else FontWeight.Normal,
                         fontSize = 13.sp,
                         modifier = Modifier
-                            .clickable(enabled = recording == null && !busy) { mode = m }
+                            .clickable(enabled = recording == null) { mode = m }
                             .padding(horizontal = 18.dp, vertical = 4.dp),
                     )
                 }
             }
+
+            // Shutter row
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 28.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Last shot / gallery
                 Box(
                     Modifier
                         .size(52.dp)
@@ -740,7 +889,7 @@ private fun CameraView(
                 }
 
                 ShutterButton(
-                    mode = mode,
+                    video = mode == Mode.VIDEO,
                     recording = recording != null,
                     enabled = developing == null && countdown == 0,
                     onClick = { if (mode == Mode.PHOTO) takePhoto() else toggleRecording() },
@@ -765,34 +914,53 @@ private fun CameraView(
                         Text(if (paused) "Resume" else "Pause", color = Color.White, fontSize = 11.sp)
                     }
                 } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(onClick = { lensBack = !lensBack }, modifier = Modifier.size(52.dp)) {
-                            Icon(Icons.Filled.Cameraswitch, contentDescription = "Switch camera", tint = Color.White)
-                        }
+                    Box(
+                        Modifier.size(52.dp).clip(CircleShape).background(Color(0xFF2A2724)).clickable { lensBack = !lensBack },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Cameraswitch, contentDescription = "Switch camera", tint = Color.White)
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.Center) {
-                TextButton(onClick = onGallery) { Text("Edit a photo", color = Muted, fontSize = 12.sp) }
-            }
         }
 
-        if (busy || developing != null) {
+        if (developing != null) {
             Column(
                 Modifier.align(Alignment.Center).background(Color(0xCC000000), RoundedCornerShape(16.dp)).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 CircularProgressIndicator(color = Amber)
                 Spacer(Modifier.height(12.dp))
-                val d = developing
-                Text(if (d != null) "Developing video… $d%" else "Developing…", color = Color.White)
+                Text("Developing video… ${developing ?: 0}%", color = Color.White)
             }
         }
     }
 }
 
+/** The lens button to highlight for the current zoom. */
+private fun activeLens(lenses: List<Lens>, current: Lens?, zoom: Float): Lens? {
+    if (current?.cameraId != null) return current
+    return lenses.filter { it.cameraId == null }.minByOrNull { abs(kotlin.math.ln(it.zoom / zoom)) } ?: current
+}
+
 @Composable
-private fun ShutterButton(mode: Mode, recording: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun SettingRow(label: String, content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.width(80.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) { content() }
+    }
+}
+
+@Composable
+private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedTrackColor = Amber))
+    }
+}
+
+@Composable
+private fun ShutterButton(video: Boolean, recording: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
             .size(76.dp)
@@ -802,7 +970,7 @@ private fun ShutterButton(mode: Mode, recording: Boolean, enabled: Boolean, onCl
             .background(
                 when {
                     !enabled -> Color.Gray
-                    mode == Mode.VIDEO -> Color(0xFFE53935)
+                    video -> Color(0xFFE53935)
                     else -> Color.White
                 },
             )
@@ -814,14 +982,7 @@ private fun ShutterButton(mode: Mode, recording: Boolean, enabled: Boolean, onCl
 }
 
 @Composable
-private fun LookStrip(templates: List<Template>, selected: Look, packFilter: String?, onSelect: (Look) -> Unit) {
-    val looks = remember(templates, packFilter) {
-        buildList<Look> {
-            add(Look.None)
-            if (packFilter == null || packFilter == MINE) templates.forEach { add(Look.Tmpl(it)) }
-            if (packFilter != MINE) FilmLooks.all.filter { packFilter == null || it.pack == packFilter }.forEach { add(Look.Film(it)) }
-        }
-    }
+private fun LookStrip(looks: List<Look>, selected: Look, onSelect: (Look) -> Unit) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -832,7 +993,7 @@ private fun LookStrip(templates: List<Template>, selected: Look, packFilter: Str
             val sub = when (l) {
                 Look.None -> "No filter"
                 is Look.Film -> l.film.pack
-                is Look.Tmpl -> if (l.template.favourite) "★ Template" else "Template"
+                is Look.Tmpl -> "Template"
             }
             Column(
                 Modifier
