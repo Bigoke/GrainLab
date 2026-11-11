@@ -12,6 +12,8 @@ android {
         applicationId = "com.bigoke.grainlab"
         minSdk = 26
         targetSdk = 35
+        // Modern phones only (64-bit ARM): keeps the AI libraries from quadrupling the APK size.
+        ndk { abiFilters += "arm64-v8a" }
         versionCode = 8
         versionName = "0.7.0"
     }
