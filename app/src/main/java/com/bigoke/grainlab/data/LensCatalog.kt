@@ -53,6 +53,18 @@ object LensCatalog {
     }
 
     /**
+     * The main back camera's full zoom range as the phone reports it. Read from the camera's
+     * description, not the running session, because full-sensor mode narrows the live range.
+     */
+    fun zoomRange(context: Context): Pair<Float, Float>? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val cm = context.getSystemService(CameraManager::class.java) ?: return null
+        val id = mainBackId(context) ?: return null
+        val r = runCatching { cm.getCameraCharacteristics(id).get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) }.getOrNull() ?: return null
+        return r.lower to r.upper
+    }
+
+    /**
      * Builds the lens buttons for the back camera. [minZoom]/[maxZoom] come from the main camera's
      * zoom range, which on most phones already spans the ultra-wide and telephoto modules.
      */

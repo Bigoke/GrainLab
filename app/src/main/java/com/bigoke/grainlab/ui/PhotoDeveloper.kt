@@ -42,6 +42,10 @@ object PhotoDeveloper {
     private val _last = MutableStateFlow<Pair<Uri, Bitmap>?>(null)
     val last: StateFlow<Pair<Uri, Bitmap>?> = _last.asStateFlow()
 
+    /** Width and height of the last photo saved, so the camera can confirm 50 MP shots. */
+    private val _lastSize = MutableStateFlow<Pair<Int, Int>?>(null)
+    val lastSize: StateFlow<Pair<Int, Int>?> = _lastSize.asStateFlow()
+
     private val _errors = MutableStateFlow(0)
     val errors: StateFlow<Int> = _errors.asStateFlow()
 
@@ -129,6 +133,7 @@ object PhotoDeveloper {
         val seed = abs(ts.hashCode() % 1000) / 1000f
         val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed, consumeSource = true)
         val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 94, "GrainLab_$ts") ?: return null
+        _lastSize.value = out.width to out.height
         ExifWriter.write(context, uri, "image/jpeg", exif, keepLoc, location, out.width, out.height)
         EditHistory.recordOutput(context, uri, null, p)
         val thumb = BitmapLoader.scaleToMax(out, 256).let { if (it === out) out.copy(Bitmap.Config.ARGB_8888, false) else it }

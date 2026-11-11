@@ -12,8 +12,8 @@ android {
         applicationId = "com.bigoke.grainlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 7
+        versionName = "0.6.1"
     }
 
     // One fixed key (kept in the repo) so every build installs over the previous one.

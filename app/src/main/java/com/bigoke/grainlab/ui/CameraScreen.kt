@@ -30,6 +30,8 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import com.bigoke.grainlab.camera.SensorInfo
+import com.bigoke.grainlab.camera.CameraReport
+import androidx.compose.material3.AlertDialog
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
@@ -435,6 +437,16 @@ private fun CameraView(
     val effective = remember(look.key, strength) { look.params().scaled(strength) }
     val currentLens = lenses.firstOrNull { it.id == lensId }
     val bindCameraId = if (lensBack) currentLens?.cameraId else null
+    // Full sensor works on the main 1x lens (or a lens the phone exposes on its own). On the
+    // 0.6x / telephoto buttons the phone needs normal mode to switch modules, so those stay standard.
+    val onMainLens = !lensBack || bindCameraId != null || lensId == "z1" ||
+        (currentLens != null && abs(currentLens.zoom - 1f) < 0.05f)
+    var showReport by remember { mutableStateOf(false) }
+    val lastSize by PhotoDeveloper.lastSize.collectAsState()
+    LaunchedEffect(lastSize) {
+        val s = lastSize ?: return@LaunchedEffect
+        if (fullSensor) context.toast("Saved ${SensorInfo.label(s.first * s.second / 1_000_000f)} (${s.first}×${s.second})")
+    }
 
     LaunchedEffect(recording, paused) {
         if (recording != null && !paused) {
@@ -513,7 +525,7 @@ private fun CameraView(
     }
 
     // ---- Bind the camera ----
-    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night, fullSensor) {
+    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night, fullSensor, onMainLens) {
         if (surfaceGen == 0) return@LaunchedEffect
         val provider = awaitProvider(context)
         cam.provider = provider
@@ -522,7 +534,7 @@ private fun CameraView(
         val selector = ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build()
         // Full sensor: allow the sensor's slower, full-resolution sizes (e.g. 50 MP) for photos only.
         // Night mode stacks several frames, so it stays at the standard size.
-        var highRes = fullSensor && mode == Mode.PHOTO && !night
+        var highRes = fullSensor && mode == Mode.PHOTO && !night && onMainLens
         fun captureSelector(hr: Boolean): ResolutionSelector {
             val b = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(ratio)
@@ -622,9 +634,10 @@ private fun CameraView(
         var zs = c.cameraInfo.zoomState.value
         var tries = 0
         while (zs == null && tries < 20) { delay(100); zs = c.cameraInfo.zoomState.value; tries++ }
-        if (lensBack && bindCameraId == null && lenses.isEmpty() && zs != null) {
+        val range = LensCatalog.zoomRange(context) ?: zs?.let { it.minZoomRatio to it.maxZoomRatio }
+        if (lensBack && bindCameraId == null && lenses.isEmpty() && range != null) {
             val built = withContext(Dispatchers.Default) {
-                LensCatalog.backLenses(context, zs.minZoomRatio, zs.maxZoomRatio)
+                LensCatalog.backLenses(context, range.first, range.second)
             }
             lenses = built
             if (built.none { it.id == lensId }) lensId = "z1"
@@ -635,6 +648,10 @@ private fun CameraView(
 
     fun selectLens(l: Lens) {
         val sameCamera = l.cameraId == bindCameraId
+        val main = l.cameraId != null || abs(l.zoom - 1f) < 0.05f
+        if (fullSensor && mode == Mode.PHOTO && !main && onMainLens) {
+            context.toast("${l.label} uses standard resolution; full sensor is on the 1x lens")
+        }
         lensId = l.id
         if (sameCamera) setZoom(l.zoom)
         // A different camera id rebinds through bindCameraId; the zoom is set after binding.
@@ -1044,6 +1061,8 @@ private fun CameraView(
                         color = Muted, fontSize = 11.sp,
                     )
                     if (fullSensor && night) Text("Night mode stacks frames at standard resolution.", color = Muted, fontSize = 11.sp)
+                    if (fullSensor && !onMainLens) Text("Full sensor is used on the 1x lens; this lens shoots standard resolution.", color = Muted, fontSize = 11.sp)
+                    TextButton(onClick = { showReport = true }) { Text("Camera report (what this phone allows)") }
                     SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
                 }
                 if (mode == Mode.VIDEO) SettingRow("Video") {
@@ -1256,6 +1275,31 @@ private fun CameraView(
                     }
                 }
             }
+        }
+
+        if (showReport) {
+            val report = remember(captureMp, lensId, fullSensor) {
+                CameraReport.build(
+                    context,
+                    "Now: lens $lensId, full sensor ${if (fullSensor) "on" else "off"}, shooting ${SensorInfo.label(captureMp)}" +
+                        (lastSize?.let { ", last saved ${it.first}x${it.second}" } ?: ""),
+                )
+            }
+            AlertDialog(
+                onDismissRequest = { showReport = false },
+                title = { Text("Camera report") },
+                text = { Text(report, fontSize = 11.sp, modifier = Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(android.content.Intent.EXTRA_TEXT, report)
+                        }
+                        context.startActivity(android.content.Intent.createChooser(send, "Share camera report"))
+                    }) { Text("Share") }
+                },
+                dismissButton = { TextButton(onClick = { showReport = false }) { Text("Close") } },
+            )
         }
 
         if (developing != null) {
