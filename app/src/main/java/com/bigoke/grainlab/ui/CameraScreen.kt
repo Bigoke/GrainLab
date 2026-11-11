@@ -29,7 +29,6 @@ import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
-import com.bigoke.grainlab.camera.SensorInfo
 import com.bigoke.grainlab.camera.CameraReport
 import androidx.compose.material3.AlertDialog
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -146,7 +145,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalView
 import com.bigoke.grainlab.camera.CameraKeys
-import com.bigoke.grainlab.camera.HistogramAnalyzer
+import com.bigoke.grainlab.camera.Scene
+import com.bigoke.grainlab.camera.SceneAnalyzer
 import com.bigoke.grainlab.camera.Manual
 import com.bigoke.grainlab.camera.ManualRanges
 import com.bigoke.grainlab.camera.ProCamera
@@ -353,10 +353,10 @@ private fun CameraView(
     var cine24 by remember { mutableStateOf(Settings.cine24) }
     var stabilise by remember { mutableStateOf(Settings.stabilise) }
     var night by remember { mutableStateOf(Settings.night) }
-    var fullSensor by remember { mutableStateOf(Settings.fullSensor) }
-    var sensorInfo by remember { mutableStateOf<SensorInfo?>(null) }
     var captureMp by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(fullSensor) { Settings.fullSensor = fullSensor }
+    var ai by remember { mutableStateOf(Settings.ai) }
+    var ignoredScene by remember { mutableStateOf(Scene.NONE) }
+    LaunchedEffect(ai) { Settings.ai = ai }
     var proMode by remember { mutableStateOf(Settings.proMode) }
     var level by remember { mutableStateOf(Settings.level) }
     var keepLocation by remember { mutableStateOf(Settings.keepLocation) }
@@ -386,7 +386,8 @@ private fun CameraView(
     var bursting by remember { mutableStateOf(false) }
     var burstCount by remember { mutableIntStateOf(0) }
     var nightProgress by remember { mutableStateOf<Int?>(null) }
-    val analyzer = remember { HistogramAnalyzer() }
+    val analyzer = remember { SceneAnalyzer() }
+    val detected by analyzer.scene.collectAsState()
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val histBins by analyzer.bins.collectAsState()
     val roll by rememberRoll(level)
@@ -420,6 +421,7 @@ private fun CameraView(
         onDispose {
             CameraKeys.active = false
             analysisExecutor.shutdown()
+            analyzer.close()
             sound.release()
         }
     }
@@ -434,19 +436,14 @@ private fun CameraView(
     LaunchedEffect(shotErrors) { if (shotErrors > 0) context.toast("A photo could not be saved") }
 
     val looks = remember(templates, packFilter) { lookList(templates, packFilter) }
-    val effective = remember(look.key, strength) { look.params().scaled(strength) }
+    val activeScene = if (ai && mode == Mode.PHOTO && detected != ignoredScene) detected else Scene.NONE
+    SideEffect { analyzer.aiEnabled = ai && mode == Mode.PHOTO }
+    LaunchedEffect(detected) { if (detected != ignoredScene) ignoredScene = Scene.NONE }
+    val effective = remember(look.key, strength, activeScene) { activeScene.tune(look.params().scaled(strength)) }
     val currentLens = lenses.firstOrNull { it.id == lensId }
     val bindCameraId = if (lensBack) currentLens?.cameraId else null
-    // Full sensor works on the main 1x lens (or a lens the phone exposes on its own). On the
-    // 0.6x / telephoto buttons the phone needs normal mode to switch modules, so those stay standard.
-    val onMainLens = !lensBack || bindCameraId != null || lensId == "z1" ||
-        (currentLens != null && abs(currentLens.zoom - 1f) < 0.05f)
     var showReport by remember { mutableStateOf(false) }
     val lastSize by PhotoDeveloper.lastSize.collectAsState()
-    LaunchedEffect(lastSize) {
-        val s = lastSize ?: return@LaunchedEffect
-        if (fullSensor) context.toast("Saved ${SensorInfo.label(s.first * s.second / 1_000_000f)} (${s.first}×${s.second})")
-    }
 
     LaunchedEffect(recording, paused) {
         if (recording != null && !paused) {
@@ -525,23 +522,17 @@ private fun CameraView(
     }
 
     // ---- Bind the camera ----
-    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night, fullSensor, onMainLens) {
+    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night, ai) {
         if (surfaceGen == 0) return@LaunchedEffect
         val provider = awaitProvider(context)
         cam.provider = provider
         val ratio = if (wide || mode == Mode.VIDEO) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
         else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
         val selector = ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build()
-        // Full sensor: allow the sensor's slower, full-resolution sizes (e.g. 50 MP) for photos only.
-        // Night mode stacks several frames, so it stays at the standard size.
-        var highRes = fullSensor && mode == Mode.PHOTO && !night && onMainLens
-        fun captureSelector(hr: Boolean): ResolutionSelector {
-            val b = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(ratio)
-                .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
-            if (hr) b.setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
-            return b.build()
-        }
+        val captureSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(ratio)
+            .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+            .build()
         val preview = Preview.Builder().setResolutionSelector(selector).build()
         preview.setSurfaceProvider(mainExecutor) { provideSurface(it) }
         val cameraSelector = when {
@@ -554,18 +545,17 @@ private fun CameraView(
         renderer.mirror = !lensBack
         // Zero-shutter-lag keeps a short buffer of frames so the photo is taken the instant you tap.
         val zsl = runCatching { provider.getCameraInfo(cameraSelector).isZslSupported }.getOrDefault(false)
-        val analysis = if (showHistogram) ImageAnalysis.Builder()
+        val analysis = if (showHistogram || (ai && mode == Mode.PHOTO)) ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { it.setAnalyzer(analysisExecutor, analyzer) } else null
-        while (true) try {
+        try {
             provider.unbindAll()
             val main = if (mode == Mode.PHOTO) {
                 val ic = ImageCapture.Builder()
-                    .setResolutionSelector(captureSelector(highRes))
+                    .setResolutionSelector(captureSelector)
                     .setCaptureMode(
                         when {
-                            highRes -> ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
                             zsl && !night -> ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
                             else -> ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
                         },
@@ -602,25 +592,10 @@ private fun CameraView(
                 val r = ManualRanges.read(c)
                 ranges = r
                 if (!manual.isAuto) ProCamera.apply(c, manual, r)
-                val info = runCatching { SensorInfo.read(c.cameraInfo) }.getOrNull()
-                sensorInfo = info
                 val res = cam.imageCapture?.resolutionInfo?.resolution
                 captureMp = if (res != null) res.width * res.height / 1_000_000f else 0f
-                if (highRes && info != null && captureMp > 0f && captureMp < info.fullMp * 0.8f) {
-                    context.toast(
-                        if (info.fullAvailable) "This lens gives apps ${SensorInfo.label(captureMp)} here (full sensor: ${SensorInfo.label(info.fullMp)})"
-                        else "This lens doesn't offer its full sensor to apps; shooting ${SensorInfo.label(captureMp)}",
-                    )
-                }
             }
-            break
         } catch (e: Exception) {
-            if (highRes) {
-                // The phone refused full resolution with this lens; fall back to the standard size.
-                highRes = false
-                context.toast("Full sensor isn't available with this lens; using standard resolution")
-                continue
-            }
             // A separate lens that cannot be opened falls back to the main camera.
             if (bindCameraId != null) {
                 lensId = "z1"
@@ -648,10 +623,6 @@ private fun CameraView(
 
     fun selectLens(l: Lens) {
         val sameCamera = l.cameraId == bindCameraId
-        val main = l.cameraId != null || abs(l.zoom - 1f) < 0.05f
-        if (fullSensor && mode == Mode.PHOTO && !main && onMainLens) {
-            context.toast("${l.label} uses standard resolution; full sensor is on the 1x lens")
-        }
         lensId = l.id
         if (sameCamera) setZoom(l.zoom)
         // A different camera id rebinds through bindCameraId; the zoom is set after binding.
@@ -704,7 +675,7 @@ private fun CameraView(
             }
             val ic = cam.imageCapture ?: return@launch
             val loc = if (keepLocation) lastLocation else null
-            if (night) {
+            if (night || activeScene == Scene.NIGHT) {
                 // Night mode: several frames, then align and average them.
                 feedback()
                 val frames = ArrayList<Pair<ByteArray, Int>>()
@@ -732,10 +703,6 @@ private fun CameraView(
     /** Burst: keeps shooting while the shutter is held (up to 30 frames). */
     fun startBurst() {
         if (bursting || night) return
-        if (fullSensor && captureMp > (sensorInfo?.standardMp ?: 99f) * 1.3f) {
-            context.toast("Burst uses standard resolution: turn off full sensor for burst")
-            return
-        }
         val ic = cam.imageCapture ?: return
         bursting = true
         burstCount = 0
@@ -798,10 +765,10 @@ private fun CameraView(
 
     val shutterAction by rememberUpdatedState({ if (mode == Mode.PHOTO) takePhoto() else toggleRecording() })
     LaunchedEffect(Unit) { CameraKeys.presses.collect { shutterAction() } }
-    LaunchedEffect(manual, ranges) {
+    LaunchedEffect(manual, ranges, activeScene == Scene.MOTION) {
         val c = cam.camera ?: return@LaunchedEffect
         val r = ranges ?: return@LaunchedEffect
-        ProCamera.apply(c, manual, r)
+        ProCamera.apply(c, manual, r, fast = activeScene == Scene.MOTION)
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -923,6 +890,13 @@ private fun CameraView(
                     }
                 }
             }
+            if (activeScene != Scene.NONE) {
+                val topDp = with(density) { top.toDp() }
+                Pill(
+                    "AI · ${activeScene.label}  ✕",
+                    Modifier.align(Alignment.TopEnd).offset(x = (-8).dp, y = topDp + 8.dp).clickable { ignoredScene = activeScene },
+                )
+            }
             nightProgress?.let { Pill("Night mode: hold still… $it/6", Modifier.align(Alignment.TopCenter).offset(y = centreY + 30.dp)) }
             if (bursting) Pill("Burst $burstCount", Modifier.align(Alignment.TopCenter).offset(y = centreY + 30.dp))
         }
@@ -973,22 +947,16 @@ private fun CameraView(
                     .clickable { proMode = !proMode }
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
-            // Resolution chip: tap to switch between standard and full sensor (e.g. 12 MP / 50 MP).
-            val si = sensorInfo
-            if (mode == Mode.PHOTO && si != null && (si.fullAvailable || fullSensor)) {
-                val shown = if (captureMp > 0f) captureMp else if (fullSensor) si.fullMp else si.standardMp
+            if (mode == Mode.PHOTO) {
                 Text(
-                    SensorInfo.label(shown).replace(" ", ""),
-                    color = if (fullSensor) Color(0xFF2B1A00) else Color.White,
+                    "AI",
+                    color = if (ai) Color(0xFF2B1A00) else Color.White,
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .padding(start = 6.dp)
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (fullSensor) Amber else Color(0x33FFFFFF))
-                        .clickable {
-                            fullSensor = !fullSensor
-                            if (fullSensor && night) context.toast("Night mode uses standard resolution")
-                        }
+                        .background(if (ai) Amber else Color(0x33FFFFFF))
+                        .clickable { ai = !ai; ignoredScene = Scene.NONE }
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
@@ -1047,21 +1015,11 @@ private fun CameraView(
                     SwitchRow("Stabilisation", stabilise) { stabilise = it }
                 }
                 if (mode == Mode.PHOTO) {
-                    SwitchRow("Full sensor resolution", fullSensor) { fullSensor = it }
-                    val si = sensorInfo
+                    SwitchRow("AI scene detection", ai) { ai = it; ignoredScene = Scene.NONE }
                     Text(
-                        when {
-                            si == null -> "Checking this lens…"
-                            si.fullAvailable -> "This lens: ${SensorInfo.label(si.standardMp)} standard, ${SensorInfo.label(si.fullMp)} full sensor" +
-                                (if (captureMp > 0f) ". Now shooting ${SensorInfo.label(captureMp)}." else ".") +
-                                " Full sensor gives more detail in good light; standard is cleaner in low light and faster."
-                            si.sensorMp >= si.standardMp * 1.4f -> "This lens has a ${SensorInfo.label(si.sensorMp)} sensor, but the phone only gives apps ${SensorInfo.label(si.standardMp)}."
-                            else -> "This lens shoots ${SensorInfo.label(si.standardMp)}."
-                        },
+                        "Recognises night, moving subjects, text, food, portraits, pets, plants and landscapes, and tunes the photo to suit. Runs on the phone.",
                         color = Muted, fontSize = 11.sp,
                     )
-                    if (fullSensor && night) Text("Night mode stacks frames at standard resolution.", color = Muted, fontSize = 11.sp)
-                    if (fullSensor && !onMainLens) Text("Full sensor is used on the 1x lens; this lens shoots standard resolution.", color = Muted, fontSize = 11.sp)
                     TextButton(onClick = { showReport = true }) { Text("Camera report (what this phone allows)") }
                     SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
                 }
@@ -1278,10 +1236,10 @@ private fun CameraView(
         }
 
         if (showReport) {
-            val report = remember(captureMp, lensId, fullSensor) {
+            val report = remember(captureMp, lensId) {
                 CameraReport.build(
                     context,
-                    "Now: lens $lensId, full sensor ${if (fullSensor) "on" else "off"}, shooting ${SensorInfo.label(captureMp)}" +
+                    "Now: lens $lensId, shooting ${captureMp.toInt()} MP" +
                         (lastSize?.let { ", last saved ${it.first}x${it.second}" } ?: ""),
                 )
             }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.bigoke.grainlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.6.1"
+        versionCode = 8
+        versionName = "0.7.0"
     }
 
     // One fixed key (kept in the repo) so every build installs over the previous one.
@@ -85,6 +85,10 @@ dependencies {
     // Template QR codes: create (ZXing) and scan (Google code scanner, no camera permission needed).
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+
+    // AI scene detection: on-device models bundled in the app (no download, works offline).
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

@@ -72,8 +72,15 @@ object ProCamera {
 
     /** Sends the manual settings to the camera (or clears them when everything is automatic). */
     @OptIn(ExperimentalCamera2Interop::class)
-    fun apply(camera: Camera, m: Manual, ranges: ManualRanges) {
+    fun apply(camera: Camera, m: Manual, ranges: ManualRanges, fast: Boolean = false) {
         val b = CaptureRequestOptions.Builder()
+        if (fast && m.iso == null && m.shutterNs == null) {
+            // Moving subject: ask for the highest steady frame rate, which keeps exposures short.
+            val fps = Camera2CameraInfo.from(camera.cameraInfo)
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.filter { it.upper <= 60 }?.maxByOrNull { it.lower }
+            if (fps != null && fps.lower >= 30) b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps)
+        }
         if (ranges.manualSensor && (m.iso != null || m.shutterNs != null)) {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, m.iso ?: 200)
