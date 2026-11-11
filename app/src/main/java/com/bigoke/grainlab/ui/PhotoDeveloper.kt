@@ -127,13 +127,13 @@ object PhotoDeveloper {
             }
         }
         val seed = abs(ts.hashCode() % 1000) / 1000f
-        val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed)
+        val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed, consumeSource = true)
         val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 94, "GrainLab_$ts") ?: return null
         ExifWriter.write(context, uri, "image/jpeg", exif, keepLoc, location, out.width, out.height)
         EditHistory.recordOutput(context, uri, null, p)
         val thumb = BitmapLoader.scaleToMax(out, 256).let { if (it === out) out.copy(Bitmap.Config.ARGB_8888, false) else it }
-        if (out !== bmp) out.recycle()
-        bmp.recycle()
+        out.recycle()
+        if (!bmp.isRecycled) bmp.recycle()
         return uri to thumb
     }
 }

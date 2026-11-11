@@ -34,15 +34,17 @@ object Pipeline {
         finishing: Boolean = true,
         useCache: Boolean = true,
         seed: Float = 0.37f,
+        /** The caller no longer needs [src]; it is freed as early as possible. */
+        consumeSource: Boolean = false,
     ): Bitmap {
         val geo = withContext(Dispatchers.Default) { Geometry.apply(src, p) }
         val lut = withContext(Dispatchers.Default) { lutFor(p, useCache) }
         val masks = if (p.masks.isEmpty()) emptyList() else withContext(Dispatchers.Default) {
             MaskRaster.render(p.masks, geo, photoKey(src, p))
         }
-        val out = GlProcessor.process(geo, p, lut, seed, masks)
+        if (consumeSource && geo !== src) src.recycle()
+        val out = GlProcessor.process(geo, p, lut, seed, masks, recycleInput = geo !== src || consumeSource)
         masks.forEach { it.recycle() }
-        if (geo !== src) geo.recycle()
         return if (finishing) withContext(Dispatchers.Default) { Finishing.apply(out, p) } else out
     }
 }

@@ -82,6 +82,10 @@ object Settings {
     var stabilise: Boolean
         get() = b("stabilise", true)
         set(v) = put { putBoolean("stabilise", v) }
+    /** Shoot at the sensor's full resolution (e.g. 50 MP) instead of the binned 12.5 MP. */
+    var fullSensor: Boolean
+        get() = b("fullSensor", false)
+        set(v) = put { putBoolean("fullSensor", v) }
     var night: Boolean
         get() = b("night", false)
         set(v) = put { putBoolean("night", v) }

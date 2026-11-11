@@ -28,6 +28,8 @@ import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import com.bigoke.grainlab.camera.SensorInfo
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
@@ -349,6 +351,10 @@ private fun CameraView(
     var cine24 by remember { mutableStateOf(Settings.cine24) }
     var stabilise by remember { mutableStateOf(Settings.stabilise) }
     var night by remember { mutableStateOf(Settings.night) }
+    var fullSensor by remember { mutableStateOf(Settings.fullSensor) }
+    var sensorInfo by remember { mutableStateOf<SensorInfo?>(null) }
+    var captureMp by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(fullSensor) { Settings.fullSensor = fullSensor }
     var proMode by remember { mutableStateOf(Settings.proMode) }
     var level by remember { mutableStateOf(Settings.level) }
     var keepLocation by remember { mutableStateOf(Settings.keepLocation) }
@@ -507,13 +513,23 @@ private fun CameraView(
     }
 
     // ---- Bind the camera ----
-    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night) {
+    LaunchedEffect(surfaceGen, lensBack, mode, wide, quality, bindCameraId, showHistogram, cine24, stabilise, night, fullSensor) {
         if (surfaceGen == 0) return@LaunchedEffect
         val provider = awaitProvider(context)
         cam.provider = provider
         val ratio = if (wide || mode == Mode.VIDEO) AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
         else AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
         val selector = ResolutionSelector.Builder().setAspectRatioStrategy(ratio).build()
+        // Full sensor: allow the sensor's slower, full-resolution sizes (e.g. 50 MP) for photos only.
+        // Night mode stacks several frames, so it stays at the standard size.
+        var highRes = fullSensor && mode == Mode.PHOTO && !night
+        fun captureSelector(hr: Boolean): ResolutionSelector {
+            val b = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(ratio)
+                .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+            if (hr) b.setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
+            return b.build()
+        }
         val preview = Preview.Builder().setResolutionSelector(selector).build()
         preview.setSurfaceProvider(mainExecutor) { provideSurface(it) }
         val cameraSelector = when {
@@ -530,14 +546,17 @@ private fun CameraView(
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { it.setAnalyzer(analysisExecutor, analyzer) } else null
-        try {
+        while (true) try {
             provider.unbindAll()
             val main = if (mode == Mode.PHOTO) {
                 val ic = ImageCapture.Builder()
-                    .setResolutionSelector(selector)
+                    .setResolutionSelector(captureSelector(highRes))
                     .setCaptureMode(
-                        if (zsl && !night) ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
-                        else ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY,
+                        when {
+                            highRes -> ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+                            zsl && !night -> ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG
+                            else -> ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+                        },
                     )
                     .setFlashMode(flash)
                     .build()
@@ -571,8 +590,25 @@ private fun CameraView(
                 val r = ManualRanges.read(c)
                 ranges = r
                 if (!manual.isAuto) ProCamera.apply(c, manual, r)
+                val info = runCatching { SensorInfo.read(c.cameraInfo) }.getOrNull()
+                sensorInfo = info
+                val res = cam.imageCapture?.resolutionInfo?.resolution
+                captureMp = if (res != null) res.width * res.height / 1_000_000f else 0f
+                if (highRes && info != null && captureMp > 0f && captureMp < info.fullMp * 0.8f) {
+                    context.toast(
+                        if (info.fullAvailable) "This lens gives apps ${SensorInfo.label(captureMp)} here (full sensor: ${SensorInfo.label(info.fullMp)})"
+                        else "This lens doesn't offer its full sensor to apps; shooting ${SensorInfo.label(captureMp)}",
+                    )
+                }
             }
+            break
         } catch (e: Exception) {
+            if (highRes) {
+                // The phone refused full resolution with this lens; fall back to the standard size.
+                highRes = false
+                context.toast("Full sensor isn't available with this lens; using standard resolution")
+                continue
+            }
             // A separate lens that cannot be opened falls back to the main camera.
             if (bindCameraId != null) {
                 lensId = "z1"
@@ -679,6 +715,10 @@ private fun CameraView(
     /** Burst: keeps shooting while the shutter is held (up to 30 frames). */
     fun startBurst() {
         if (bursting || night) return
+        if (fullSensor && captureMp > (sensorInfo?.standardMp ?: 99f) * 1.3f) {
+            context.toast("Burst uses standard resolution: turn off full sensor for burst")
+            return
+        }
         val ic = cam.imageCapture ?: return
         bursting = true
         burstCount = 0
@@ -916,6 +956,25 @@ private fun CameraView(
                     .clickable { proMode = !proMode }
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
+            // Resolution chip: tap to switch between standard and full sensor (e.g. 12 MP / 50 MP).
+            val si = sensorInfo
+            if (mode == Mode.PHOTO && si != null && (si.fullAvailable || fullSensor)) {
+                val shown = if (captureMp > 0f) captureMp else if (fullSensor) si.fullMp else si.standardMp
+                Text(
+                    SensorInfo.label(shown).replace(" ", ""),
+                    color = if (fullSensor) Color(0xFF2B1A00) else Color.White,
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (fullSensor) Amber else Color(0x33FFFFFF))
+                        .clickable {
+                            fullSensor = !fullSensor
+                            if (fullSensor && night) context.toast("Night mode uses standard resolution")
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
             if (timer > 0) Text("${timer}s", color = Amber, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
             Spacer(Modifier.weight(1f))
             if (recording != null) {
@@ -970,7 +1029,23 @@ private fun CameraView(
                     SwitchRow("Cinematic 24 fps", cine24) { cine24 = it }
                     SwitchRow("Stabilisation", stabilise) { stabilise = it }
                 }
-                if (mode == Mode.PHOTO) SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
+                if (mode == Mode.PHOTO) {
+                    SwitchRow("Full sensor resolution", fullSensor) { fullSensor = it }
+                    val si = sensorInfo
+                    Text(
+                        when {
+                            si == null -> "Checking this lens…"
+                            si.fullAvailable -> "This lens: ${SensorInfo.label(si.standardMp)} standard, ${SensorInfo.label(si.fullMp)} full sensor" +
+                                (if (captureMp > 0f) ". Now shooting ${SensorInfo.label(captureMp)}." else ".") +
+                                " Full sensor gives more detail in good light; standard is cleaner in low light and faster."
+                            si.sensorMp >= si.standardMp * 1.4f -> "This lens has a ${SensorInfo.label(si.sensorMp)} sensor, but the phone only gives apps ${SensorInfo.label(si.standardMp)}."
+                            else -> "This lens shoots ${SensorInfo.label(si.standardMp)}."
+                        },
+                        color = Muted, fontSize = 11.sp,
+                    )
+                    if (fullSensor && night) Text("Night mode stacks frames at standard resolution.", color = Muted, fontSize = 11.sp)
+                    SwitchRow("Also save the original", saveOriginal) { saveOriginal = it }
+                }
                 if (mode == Mode.VIDEO) SettingRow("Video") {
                     listOf("HD", "Full HD", "4K").forEachIndexed { i, q -> Choice(q, quality == i) { if (recording == null) quality = i } }
                 }

@@ -52,6 +52,8 @@ object GlProcessor {
         lut: FloatArray,
         seed: Float = 0.37f,
         masks: List<Bitmap> = emptyList(),
+        /** Free [src] as soon as it is on the GPU (saves ~200 MB on a 50 MP photo). */
+        recycleInput: Boolean = false,
     ): Bitmap =
         withContext(dispatcher) {
             init()
@@ -65,6 +67,9 @@ object GlProcessor {
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, srcTex)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
+            if (bmp !== src && bmp !== input) bmp.recycle()
+            if (input !== src) input.recycle()
+            if (recycleInput) src.recycle()
 
             if (lut !== lastLut) {
                 GlUtil.uploadLut(lutTex, lut)
@@ -83,7 +88,12 @@ object GlProcessor {
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, masks[i], 0)
             }
             val maskParams = Effects.maskParams(params)
-            val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+            // Each strip is read into a small buffer and drawn into the result, so a 50 MP photo
+            // never needs a second full-size copy in memory.
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(out)
+            val buf = ByteBuffer.allocateDirect(w * stripH * 4).order(ByteOrder.nativeOrder())
+            val strip = Bitmap.createBitmap(w, stripH, Bitmap.Config.ARGB_8888)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
             var y0 = 0
             while (y0 < h) {
@@ -103,16 +113,15 @@ object GlProcessor {
                     maskParams = maskParams,
                     maskCount = maskCount,
                 )
-                buf.position(y0 * w * 4)
+                buf.position(0)
                 GLES20.glReadPixels(0, 0, w, rows, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+                buf.position(0)
+                strip.copyPixelsFromBuffer(buf)
+                canvas.drawBitmap(strip, android.graphics.Rect(0, 0, w, rows), android.graphics.Rect(0, y0, w, y0 + rows), null)
                 y0 += rows
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            buf.position(0)
-            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            out.copyPixelsFromBuffer(buf)
-            if (bmp !== src && bmp !== input) bmp.recycle()
-            if (input !== src) input.recycle()
+            strip.recycle()
             out
         }
 
