@@ -204,6 +204,7 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
     var showSaveTemplate by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
 
     var splitMode by remember { mutableStateOf(false) }
     var split by remember { mutableFloatStateOf(0.5f) }
@@ -661,6 +662,7 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Color.White) }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Edit history") }, onClick = { showHistory = true; menuOpen = false })
                     DropdownMenuItem(text = { Text("Copy edit") }, onClick = {
                         EditClipboard.params = params
                         menuOpen = false
@@ -851,6 +853,45 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
     }
 
     // =============================== Dialogs ===============================
+    if (showHistory) {
+        // Every step so far (and any undone steps); tap one to jump straight to it.
+        val steps = undoStack.toList() + committed + redoStack.toList().reversed()
+        val currentIndex = undoStack.size
+        AlertDialog(
+            onDismissRequest = { showHistory = false },
+            title = { Text("Edit history") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    steps.forEachIndexed { i, step ->
+                        val label = if (i == 0) "Original" else stepLabel(steps[i - 1], step)
+                        Text(
+                            "${i}. $label",
+                            color = when {
+                                i == currentIndex -> Amber
+                                i > currentIndex -> Muted
+                                else -> Color.White
+                            },
+                            fontWeight = if (i == currentIndex) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    undoStack.clear()
+                                    undoStack.addAll(steps.subList(0, i))
+                                    redoStack.clear()
+                                    redoStack.addAll(steps.subList(i + 1, steps.size).reversed())
+                                    committed = step
+                                    params = step
+                                    showHistory = false
+                                }
+                                .padding(vertical = 8.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showHistory = false }) { Text("Close") } },
+        )
+    }
+
     reeditOffer?.let { offer ->
         AlertDialog(
             onDismissRequest = { reeditOffer = null },
@@ -920,6 +961,30 @@ fun EditorScreen(uri: Uri, onBack: () -> Unit) {
 }
 
 // =============================== Helpers ===============================
+
+/** A short name for what changed between two steps, for the history list. */
+private fun stepLabel(prev: EditParams, next: EditParams): String {
+    if (prev.filmId != next.filmId) return "Film: " + (FilmLooks.byId(next.filmId)?.name ?: "none")
+    if (prev.masks.size != next.masks.size) return if (next.masks.size > prev.masks.size) "Mask added" else "Mask removed"
+    if (prev.masks != next.masks) return "Mask adjusted"
+    if (prev.spots.size != next.spots.size) return if (next.spots.size > prev.spots.size) "Spot healed" else "Heal undone"
+    val changed = (prev.values.keys + next.values.keys).filter { abs(prev[it] - next[it]) > 1e-4f }
+    if (changed.isEmpty()) return "No change"
+    val names = changed.map { k ->
+        when {
+            k.startsWith("curve_") -> "Curve"
+            k.startsWith("hsl_") -> "HSL"
+            k.startsWith("crop") -> "Crop"
+            else -> Adjustments.spec(k)?.label ?: k
+        }
+    }.distinct()
+    return when {
+        names.size == 1 -> names[0]
+        names.size == 2 -> names.joinToString(" and ")
+        names.size > 6 -> "Auto fix / template (${names.size} settings)"
+        else -> names.take(2).joinToString(", ") + " and ${names.size - 2} more"
+    }
+}
 
 private fun specsFor(group: Group): List<Adjust> = Adjustments.all.filter { it.group == group && it.step == 0f }
 

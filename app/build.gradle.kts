@@ -14,8 +14,8 @@ android {
         targetSdk = 35
         // Modern phones only (64-bit ARM): keeps the AI libraries from quadrupling the APK size.
         ndk { abiFilters += "arm64-v8a" }
-        versionCode = 8
-        versionName = "0.7.0"
+        versionCode = 9
+        versionName = "0.8.0"
     }
 
     // One fixed key (kept in the repo) so every build installs over the previous one.

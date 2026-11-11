@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import android.view.KeyEvent
 import com.bigoke.grainlab.camera.CameraKeys
 import androidx.activity.ComponentActivity
@@ -50,6 +52,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashReporter.install(this)
+        lifecycleScope.launch { runCatching { com.bigoke.grainlab.gl.GlProcessor.warmUp() } }
         TemplateStore.init(this)
         Settings.init(this)
         FilmLooks.safeNames = Settings.storeSafeNames

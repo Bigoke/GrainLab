@@ -54,6 +54,9 @@ class SceneAnalyzer : ImageAnalysis.Analyzer {
 
     @Volatile var aiEnabled = false
 
+    /** Set while a photo is being taken so recognition never competes with the shutter. */
+    @Volatile var paused = false
+
     private val labeler by lazy { ImageLabeling.getClient(ImageLabelerOptions.Builder().setConfidenceThreshold(0.6f).build()) }
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
@@ -125,7 +128,7 @@ class SceneAnalyzer : ImageAnalysis.Analyzer {
 
             // What is in the picture: about once a second, on a small copy.
             val now = System.currentTimeMillis()
-            if (!mlBusy && now - lastMl > 900) {
+            if (!mlBusy && !paused && now - lastMl > 1500) {
                 lastMl = now
                 val rotation = image.imageInfo.rotationDegrees
                 val bmp = runCatching { image.toBitmap() }.getOrNull()

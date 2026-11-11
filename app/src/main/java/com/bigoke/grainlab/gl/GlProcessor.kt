@@ -46,6 +46,9 @@ object GlProcessor {
 
     private val maskTex = IntArray(4)
 
+    /** Starts the graphics engine early so the first photo or filter preview is not delayed. */
+    suspend fun warmUp() = withContext(dispatcher) { init() }
+
     suspend fun process(
         src: Bitmap,
         params: EditParams,

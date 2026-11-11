@@ -1,6 +1,6 @@
 # GrainLab
 
-An Android film camera and photo editor: 60+ classic film looks, pro camera controls and a pro editor with masks, curves and healing. Everything runs on the phone.
+An Android film camera and photo editor: 110 classic film looks, pro camera controls and a pro editor with masks, curves and healing. Everything runs on the phone.
 
 **Download the latest APK:** https://github.com/Bigoke/GrainLab/releases/latest/download/GrainLab.apk
 
@@ -30,7 +30,7 @@ An Android film camera and photo editor: 60+ classic film looks, pro camera cont
 - Batch apply a template or look to up to 50 photos
 
 ## Film packs
-Kodak, Fujifilm, Agfa, Ilford, Polaroid, Hasselblad, Urban, Winter and Vintage. A "brand-free names" option
+Kodak, Fujifilm, Agfa, Ilford, Polaroid, Hasselblad, Cinema, Indie, Cameras, Urban, Winter, Moods and Vintage (hand-tuned approximations, not measured film profiles). A "brand-free names" option
 (camera settings) switches to generic names for publishing.
 
 ## How it works

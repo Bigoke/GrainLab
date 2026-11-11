@@ -23,6 +23,8 @@ data class Effects(
     val vignette: Float = 0f,
     val halation: Float = 0f,
     val lightLeak: Float = 0f,
+    val shadows: Float = 0f,
+    val highlights: Float = 0f,
     /** Viewfinder only: highlight in-focus edges in red. */
     val peaking: Float = 0f,
     /** Viewfinder only: stripes over blown-out highlights. */
@@ -34,6 +36,7 @@ data class Effects(
             noiseReduction = p["noiseReduction"],
             grain = p["grain"], grainSize = p["grainSize"], vignette = p["vignette"],
             halation = p["halation"], lightLeak = p["lightLeak"],
+            shadows = p["shadows"], highlights = p["highlights"],
         )
 
         /** Exposure, contrast, saturation, temperature for each mask (4 floats each). */
@@ -90,6 +93,8 @@ uniform float uGrainSize;
 uniform float uVignette;
 uniform float uHalation;
 uniform float uLightLeak;
+uniform float uShadows;
+uniform float uHighlights;
 uniform float uPeaking;
 uniform float uZebra;
 uniform sampler2D uMask0;
@@ -145,14 +150,32 @@ void main() {
         for (int j = -2; j <= 2; j++) {
             for (int i = -2; i <= 2; i++) {
                 if (i == 0 && j == 0) continue;
-                vec3 s = src(uv + vec2(float(i), float(j)) * tx);
+                vec3 s = src(uv + vec2(float(i), float(j)) * tx * 1.5);
                 vec3 d = s - c;
                 float w = exp(-dot(d, d) / (2.0 * sig * sig) - float(i * i + j * j) / 8.0);
                 sum += s * w;
                 ws += w;
             }
         }
-        c = mix(c, sum / ws, clamp(uNR * 1.4, 0.0, 1.0));
+        // Colour speckle is removed harder than brightness detail, which keeps photos crisp.
+        vec3 d = sum / ws;
+        float ly = mix(luma(c), luma(d), clamp(uNR * 1.2, 0.0, 1.0));
+        vec3 ch = mix(c - luma(c), d - luma(d), clamp(uNR * 2.5, 0.0, 1.0));
+        c = ly + ch;
+    }
+
+    if (abs(uShadows) > 0.001 || abs(uHighlights) > 0.001) {
+        // Local shadows / highlights: the mask comes from the blurred surroundings, so lifted
+        // shadows keep their own contrast instead of going flat.
+        vec2 r = tx * 24.0;
+        float bl = luma(c) * 0.2;
+        for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398;
+            bl += luma(src(uv + vec2(cos(a), sin(a)) * r)) * 0.1;
+        }
+        float sm = (1.0 - bl) * (1.0 - bl) * smoothstep(0.0, 0.15, bl + 0.1);
+        float hm = bl * bl;
+        c += 0.32 * uShadows * sm + 0.3 * uHighlights * hm;
     }
 
     if (abs(uTexture) > 0.001) {
@@ -299,6 +322,8 @@ class GlProgram(private val external: Boolean) {
     private val uVignette: Int
     private val uHalation: Int
     private val uLightLeak: Int
+    private val uShadows: Int
+    private val uHighlights: Int
     private val uPeaking: Int
     private val uMaskTex = IntArray(4)
     private val uMaskP = IntArray(4)
@@ -333,6 +358,8 @@ class GlProgram(private val external: Boolean) {
         uVignette = GLES20.glGetUniformLocation(id, "uVignette")
         uHalation = GLES20.glGetUniformLocation(id, "uHalation")
         uLightLeak = GLES20.glGetUniformLocation(id, "uLightLeak")
+        uShadows = GLES20.glGetUniformLocation(id, "uShadows")
+        uHighlights = GLES20.glGetUniformLocation(id, "uHighlights")
         uPeaking = GLES20.glGetUniformLocation(id, "uPeaking")
         for (i in 0..3) {
             uMaskTex[i] = GLES20.glGetUniformLocation(id, "uMask$i")
@@ -403,6 +430,8 @@ class GlProgram(private val external: Boolean) {
         GLES20.glUniform1f(uVignette, fx.vignette)
         GLES20.glUniform1f(uHalation, fx.halation)
         GLES20.glUniform1f(uLightLeak, fx.lightLeak)
+        GLES20.glUniform1f(uShadows, fx.shadows)
+        GLES20.glUniform1f(uHighlights, fx.highlights)
         GLES20.glUniform1f(uPeaking, fx.peaking)
         GLES20.glUniform1f(uZebra, fx.zebra)
         GLES20.glUniform1f(uSeed, seed)

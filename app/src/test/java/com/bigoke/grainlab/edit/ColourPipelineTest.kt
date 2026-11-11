@@ -58,6 +58,27 @@ class ColourPipelineTest {
     }
 
     @Test
+    fun brightenedHighlightsRollOffInsteadOfClipping() {
+        val lut = LutBuilder.build(EditParams().with("exposure", 1.5f))
+        // Bright greys must stay distinct (no flat clipped plateau) and keep their order.
+        var last = -1f
+        for (i in n / 2 until n) {
+            val v = at(lut, i, i, i, 1)
+            assertTrue("grey $i not above previous ($v <= $last)", v > last + 0.0005f)
+            last = v
+        }
+        assertTrue(last <= 1f)
+    }
+
+    @Test
+    fun brandFreeNamesCoverEveryBrandedLook() {
+        val branded = setOf(FilmLooks.KODAK, FilmLooks.FUJI, FilmLooks.AGFA, FilmLooks.ILFORD, FilmLooks.POLAROID, FilmLooks.HB)
+        for (look in FilmLooks.all.filter { it.pack in branded }) {
+            assertTrue("no brand-free name for ${look.id}", FilmLooks.safeName(look.id) != null)
+        }
+    }
+
+    @Test
     fun blackAndWhiteLooksAreNeutral() {
         for (look in FilmLooks.all.filter { it.bw != null && abs(it.shadowTint.sum()) + abs(it.highlightTint.sum()) == 0f }) {
             val lut = LutBuilder.build(EditParams().withFilm(look))

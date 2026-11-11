@@ -132,7 +132,7 @@ object PhotoDeveloper {
         }
         val seed = abs(ts.hashCode() % 1000) / 1000f
         val out = if (p.isIdentity()) bmp else Pipeline.render(bmp, p, useCache = false, seed = seed, consumeSource = true)
-        val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 94, "GrainLab_$ts") ?: return null
+        val uri = MediaSaver.saveBitmap(context, out, ExportFormat.JPEG, 96, "GrainLab_$ts") ?: return null
         _lastSize.value = out.width to out.height
         ExifWriter.write(context, uri, "image/jpeg", exif, keepLoc, location, out.width, out.height)
         EditHistory.recordOutput(context, uri, null, p)

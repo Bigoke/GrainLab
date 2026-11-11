@@ -164,6 +164,7 @@ import com.bigoke.grainlab.edit.Pipeline
 import com.bigoke.grainlab.gl.CameraGlRenderer
 import com.bigoke.grainlab.video.VideoDeveloper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -437,7 +438,10 @@ private fun CameraView(
 
     val looks = remember(templates, packFilter) { lookList(templates, packFilter) }
     val activeScene = if (ai && mode == Mode.PHOTO && detected != ignoredScene) detected else Scene.NONE
-    SideEffect { analyzer.aiEnabled = ai && mode == Mode.PHOTO }
+    SideEffect {
+        analyzer.aiEnabled = ai && mode == Mode.PHOTO
+        analyzer.paused = nightProgress != null || bursting || flashOverlay
+    }
     LaunchedEffect(detected) { if (detected != ignoredScene) ignoredScene = Scene.NONE }
     val effective = remember(look.key, strength, activeScene) { activeScene.tune(look.params().scaled(strength)) }
     val currentLens = lenses.firstOrNull { it.id == lensId }
@@ -561,6 +565,8 @@ private fun CameraView(
                         },
                     )
                     .setFlashMode(flash)
+                    // Least-compressed frame from the camera, since the photo is saved again after developing.
+                    .setJpegQuality(100)
                     .build()
                 cam.imageCapture = ic
                 cam.videoCapture = null
@@ -679,10 +685,10 @@ private fun CameraView(
                 // Night mode: several frames, then align and average them.
                 feedback()
                 val frames = ArrayList<Pair<ByteArray, Int>>()
-                for (i in 1..6) {
-                    nightProgress = i
-                    captureOne(ic)?.let { frames.add(it) }
-                }
+                // All six frames are requested at once, so the camera shoots them back to back.
+                nightProgress = 0
+                val shots = (1..6).map { async { captureOne(ic).also { nightProgress = (nightProgress ?: 0) + 1 } } }
+                shots.forEach { s -> s.await()?.let { frames.add(it) } }
                 nightProgress = null
                 if (frames.isEmpty()) { context.toast("Capture failed"); return@launch }
                 PhotoDeveloper.submitNight(context, frames, effective, mirror = !lensBack, keepOriginal = saveOriginal, location = loc)

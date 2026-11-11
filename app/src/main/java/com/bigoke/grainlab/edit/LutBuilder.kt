@@ -20,6 +20,8 @@ object LutBuilder {
         val expMul = 2.0.pow(p["exposure"].toDouble()).toFloat()
         val temp = p["temperature"]
         val tint = p["tint"]
+        /** Brightest value exposure and white balance can produce (1 = nothing pushed past white). */
+        val peak = (expMul * max(1f + 0.22f * abs(temp), 1f + 0.15f * abs(tint))).let { if (it <= 0f) 0f else it.pow(1f / 2.2f) }
         val lo = -0.12f * p["blacks"]
         val hi = 1f - 0.15f * p["whites"]
         val shadows = p["shadows"]
@@ -89,12 +91,24 @@ object LutBuilder {
         var lb = toLin(c[2]) * x.expMul * (1f - 0.22f * x.temp)
         c[0] = toGamma(lr); c[1] = toGamma(lg); c[2] = toGamma(lb)
 
+        // 1b. Highlight roll-off: brightened highlights ease into white like film instead of
+        // clipping. Values up to the knee are untouched, so an unedited photo is unchanged.
+        if (x.peak > 1.001f) {
+            val knee = 0.75f
+            val s = (1f - knee) / (x.peak - 1f)
+            for (k in 0..2) if (c[k] > knee) {
+                val t = ((c[k] - knee) / (x.peak - knee)).coerceIn(0f, 1f)
+                c[k] = knee + (1f - knee) * t * (1f + s) / (t + s)
+            }
+        }
+
         // 2. Whites / blacks (levels)
         val range = x.hi - x.lo
         for (k in 0..2) c[k] = (c[k] - x.lo) / range
 
         // 3. Shadows / highlights on luminance
-        if (x.shadows != 0f || x.highlights != 0f) {
+        // (Shadows and highlights are applied per area in the shader, which keeps local contrast.)
+        if (false) {
             val l = luma(c).coerceIn(0f, 1f)
             val sm = (1f - l) * (1f - l) * smooth(0f, 0.15f, l + 0.1f)
             val hm = l * l
